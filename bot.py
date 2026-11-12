@@ -296,17 +296,17 @@ def calculate_latency(panel_time_str):
         diff_seconds = int((server_now - panel_dt).total_seconds())
 
         if diff_seconds <= 1:
-            return "১ সেকেন্ড লেট (ইনস্ট্যান্ট)"
+            return "1s (Instant)"
         elif diff_seconds < 60:
-            return f"{diff_seconds} সেকেন্ড লেট"
+            return f"{diff_seconds}s"
         elif diff_seconds < 3600:
             mins = diff_seconds // 60
             secs = diff_seconds % 60
-            return f"{mins} মিনিট {secs} সেকেন্ড লেট"
+            return f"{mins}m {secs}s"
         else:
             hours = diff_seconds // 3600
             mins = (diff_seconds % 3600) // 60
-            return f"{hours} ঘণ্টা {mins} মিনিট লেট"
+            return f"{hours}h {mins}m"
     except Exception:
         return "N/A"
 
@@ -325,24 +325,24 @@ def format_sms_message(rec, keyword=""):
     text = (
         f"📩 <b>New SMS Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 <b>প্যানেল টাইম (Panel):</b> <code>{panel_time}</code>\n"
-        f"⚡ <b>গ্রুপে ডেলিভারি (Bot):</b> <code>{bot_delivery_time}</code>\n"
-        f"⏳ <b>বিলম্ব (Latency):</b> <code>{latency_str}</code>\n"
+        f"🕒 <b>Panel:</b> <code>{panel_time}</code>\n"
+        f"⚡ <b>Delivery:</b> <code>{bot_delivery_time}</code>\n"
+        f"⏳ <b>Latency:</b> <code>{latency_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🌍 <b>দেশ (Country):</b> {flag} <b>{country_name}</b>\n"
-        f"📱 <b>নাম্বার (Number):</b> <code>+{number}</code>\n"
-        f"🏷 <b>প্রেরক (CLI):</b> <b>{cli}</b>\n"
+        f"🌍 <b>Country:</b> {flag} <b>{country_name}</b>\n"
+        f"📱 <b>Number:</b> <code>+{number}</code>\n"
+        f"🏷 <b>CLI:</b> <b>{cli}</b>\n"
     )
     if otp:
-        text += f"🔑 <b>ওটিপি (OTP):</b> <code>{html.escape(otp)}</code>\n"
+        text += f"🔑 <b>OTP:</b> <code>{html.escape(otp)}</code>\n"
     text += (
-        f"💬 <b>মেসেজ (Message):</b>\n"
+        f"💬 <b>Message:</b>\n"
         f"<blockquote>{msg}</blockquote>\n"
     )
     if cause:
         text += f"⚠️ <b>Cause:</b> <code>{cause}</code>\n"
     if keyword:
-        text += f"🔍 <b>কিওয়ার্ড:</b> <code>{html.escape(keyword)}</code>\n"
+        text += f"🔍 <b>Keyword:</b> <code>{html.escape(keyword)}</code>\n"
     text += f"━━━━━━━━━━━━━━━━━━━━━━"
     return text
 
