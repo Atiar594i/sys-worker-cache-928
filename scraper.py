@@ -19,8 +19,9 @@ class FlexSMSClient:
         })
         self.ajax_url = None
         self.is_logged_in = False
-        # Server clock skew offset in seconds (local_now - server_now)
         self.server_clock_offset = 36.0
+        self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.last_login_time = 0
 
     def sync_server_clock(self, headers):
         """Calibrates clock difference between server HTTP Date header and local machine UTC."""
@@ -108,7 +109,9 @@ class FlexSMSClient:
 
                 self.ajax_url = f"{self.base_url}/agent/{ajax_match.group(1)}"
                 self.is_logged_in = True
-                logger.info(f"Login successful! Ajax endpoint initialized: {self.ajax_url} (Clock skew: {self.server_clock_offset:.1f}s)")
+                self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                self.last_login_time = time.time()
+                logger.info(f"Login successful! Ajax endpoint initialized for date {self.current_date}: {self.ajax_url} (Clock skew: {self.server_clock_offset:.1f}s)")
                 return True
 
             except Exception as e:
@@ -122,11 +125,20 @@ class FlexSMSClient:
         """
         Fetches failed SMS records.
         Strictly sorts DESCENDING so latest records are always first.
-        Searches across all columns including SMS Message body.
+        Automatically updates date at midnight UTC and keeps session fresh.
         """
-        if not self.is_logged_in or not self.ajax_url:
+        now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        # Check if date rolled over or session is older than 30 minutes
+        if not self.is_logged_in or not self.ajax_url or (self.current_date != now_date_str) or (time.time() - self.last_login_time > 1800):
+            logger.info("Session renewal / date check triggered.")
             if not self.login():
                 return None
+
+        # Double check date in ajax_url
+        if self.ajax_url:
+            self.ajax_url = re.sub(r'fdate1=\d{4}-\d{2}-\d{2}', f'fdate1={now_date_str}', self.ajax_url)
+            self.ajax_url = re.sub(r'fdate2=\d{4}-\d{2}-\d{2}', f'fdate2={now_date_str}', self.ajax_url)
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',

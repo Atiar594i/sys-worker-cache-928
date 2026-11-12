@@ -7,6 +7,8 @@ import os
 import sys
 import re
 import io
+import phonenumbers
+from phonenumbers import geocoder
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -43,6 +45,7 @@ def load_config():
         "total_sent": 0,
         "seen_hashes": [],
         "collected_numbers": [],
+        "consumed_numbers": [],
         "admins": [SUPER_ADMIN_ID],
         "super_admin": SUPER_ADMIN_ID
     }
@@ -55,6 +58,8 @@ def load_config():
             logger.error(f"Error loading config.json: {e}")
     if "collected_numbers" not in default_config:
         default_config["collected_numbers"] = []
+    if "consumed_numbers" not in default_config:
+        default_config["consumed_numbers"] = []
     if "admins" not in default_config:
         default_config["admins"] = [SUPER_ADMIN_ID]
     elif SUPER_ADMIN_ID not in default_config["admins"]:
@@ -67,6 +72,8 @@ def save_config(config):
             config["seen_hashes"] = config["seen_hashes"][-5000:]
         if len(config.get("collected_numbers", [])) > 5000:
             config["collected_numbers"] = config["collected_numbers"][-5000:]
+        if len(config.get("consumed_numbers", [])) > 10000:
+            config["consumed_numbers"] = config["consumed_numbers"][-10000:]
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as e:
@@ -89,7 +96,6 @@ def is_admin(user_id):
     return int(user_id) in admins
 
 async def check_auth(update: Update) -> bool:
-    """Verifies that the user sending the command/callback is an authorized Admin."""
     user = update.effective_user
     user_id = user.id if user else None
     if not is_admin(user_id):
@@ -109,6 +115,131 @@ async def check_auth(update: Update) -> bool:
             )
         return False
     return True
+
+def get_country_info(phone_str):
+    clean = str(phone_str).lstrip("+").strip()
+    try:
+        p = phonenumbers.parse("+" + clean)
+        country_name = geocoder.country_name_for_number(p, "en")
+        iso = phonenumbers.region_code_for_number(p)
+        if not country_name:
+            country_name = f"Code +{p.country_code}"
+        if not iso:
+            iso = "XX"
+        flag = "".join(chr(127397 + ord(c)) for c in iso.upper()) if len(iso) == 2 and iso != "XX" else "🌐"
+        return country_name, iso, flag, p.country_code
+    except Exception:
+        return "Other Countries", "XX", "🌐", 0
+
+def group_numbers_by_country():
+    nums = config.get("collected_numbers", [])
+    groups = {}
+    for n in nums:
+        c_name, iso, flag, code = get_country_info(n)
+        if iso not in groups:
+            groups[iso] = {
+                "country": c_name,
+                "flag": flag,
+                "numbers": []
+            }
+        groups[iso]["numbers"].append(n)
+    return groups
+
+def render_country_selection_menu():
+    groups = group_numbers_by_country()
+    total = len(config.get("collected_numbers", []))
+    
+    if total == 0:
+        text = (
+            "📱 <b>বর্তমানে কোনো নতুন নাম্বার সংরক্ষিত নেই।</b>\n\n"
+            "নতুন SMS আসামাত্র নতুন নাম্বার স্বয়ংক্রিয়ভাবে এখানে দেশভিত্তিক যুক্ত হবে।"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
+        return text, InlineKeyboardMarkup(keyboard)
+
+    text = (
+        f"📋 <b>সংগৃহীত নাম্বারসমূহ (দেশভিত্তিক তালিকা):</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"মোট সক্রিয় নাম্বার: <b>{total} টি</b>\n\n"
+        f"<i>যে দেশের নাম্বার কপি বা ডাউনলোড করতে চান নির্বাচন করুন:</i>"
+    )
+
+    keyboard = []
+    sorted_groups = sorted(groups.items(), key=lambda item: len(item[1]["numbers"]), reverse=True)
+    row = []
+    for iso, info in sorted_groups:
+        btn_text = f"{info['flag']} {info['country']} ({len(info['numbers'])})"
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"view_c_{iso}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton(f"🌐 সব দেশের নাম্বার একসাথে ({total}টি)", callback_data="view_c_ALL")])
+    keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
+
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_country_numbers_view(iso):
+    groups = group_numbers_by_country()
+    if iso == "ALL":
+        target_numbers = config.get("collected_numbers", [])
+        title = "🌐 সব দেশের নাম্বার"
+    else:
+        info = groups.get(iso)
+        if not info or not info["numbers"]:
+            return render_country_selection_menu()
+        target_numbers = info["numbers"]
+        title = f"{info['flag']} {info['country']}"
+
+    count = len(target_numbers)
+    if count == 0:
+        return render_country_selection_menu()
+
+    subset = target_numbers[-100:]
+    num_list_text = "\n".join([f"+{n}" for n in reversed(subset)])
+    extra_note = f"\n<i>(সর্বশেষ {len(subset)} টি দেখানো হচ্ছে)</i>" if count > 100 else ""
+
+    text = (
+        f"📱 <b>{title} (মোট {count} টি):</b>\n"
+        f"<i>(নিচের বক্সে ট্যাপ করলেই সবগুলো নাম্বার একসাথে কপি হয়ে যাবে)</i>\n\n"
+        f"<pre>{num_list_text}</pre>{extra_note}\n\n"
+        f"⚠️ <b>কপি বা ডাউনলোড করার পর:</b>\n"
+        f"নিচের <b>'✅ কপি করেছি (ডিলিট)'</b> বাটনে চাপুন। এতে এই {count}টি নাম্বার তালিকা থেকে মুছে যাবে এবং ভবিষ্যতে এই নাম্বারে কোড আসলে তা আর সংগ্রহ হবে না।"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ কপি করেছি (ডিলিট)", callback_data=f"consume_c_{iso}"),
+            InlineKeyboardButton("📥 ডাউনলোড ও ডিলিট (.txt)", callback_data=f"down_consume_c_{iso}")
+        ],
+        [
+            InlineKeyboardButton("🔙 দেশ তালিকায় ফিরে যান", callback_data="menu_numbers")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+def consume_numbers_for_country(iso):
+    groups = group_numbers_by_country()
+    if iso == "ALL":
+        to_consume = list(config.get("collected_numbers", []))
+    else:
+        to_consume = list(groups.get(iso, {}).get("numbers", []))
+    
+    if not to_consume:
+        return 0, []
+
+    if "consumed_numbers" not in config:
+        config["consumed_numbers"] = []
+    
+    for n in to_consume:
+        if n not in config["consumed_numbers"]:
+            config["consumed_numbers"].append(n)
+
+    config["collected_numbers"] = [n for n in config["collected_numbers"] if n not in to_consume]
+    save_config(config)
+    return len(to_consume), to_consume
 
 def extract_otp(text):
     if not text:
@@ -159,7 +290,6 @@ def calculate_latency(panel_time_str):
         panel_dt = datetime.strptime(raw_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         now_utc = datetime.now(timezone.utc)
         
-        # Compensate for server clock skew offset
         server_clock_offset = getattr(scraper, "server_clock_offset", 36.0)
         server_now = now_utc - timedelta(seconds=server_clock_offset)
         
@@ -190,6 +320,7 @@ def format_sms_message(rec, keyword=""):
     bot_delivery_time = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
     latency_str = calculate_latency(rec.get("time", ""))
     otp = extract_otp(rec.get("message", ""))
+    country_name, iso, flag, code = get_country_info(number)
     
     text = (
         f"📩 <b>New SMS Received</b>\n"
@@ -198,6 +329,7 @@ def format_sms_message(rec, keyword=""):
         f"⚡ <b>গ্রুপে ডেলিভারি (Bot):</b> <code>{bot_delivery_time}</code>\n"
         f"⏳ <b>বিলম্ব (Latency):</b> <code>{latency_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌍 <b>দেশ (Country):</b> {flag} <b>{country_name}</b>\n"
         f"📱 <b>নাম্বার (Number):</b> <code>+{number}</code>\n"
         f"🏷 <b>প্রেরক (CLI):</b> <b>{cli}</b>\n"
     )
@@ -224,7 +356,7 @@ def get_main_keyboard():
             InlineKeyboardButton("⚡ Check Now", callback_data="check_now")
         ],
         [
-            InlineKeyboardButton("📋 Copy Numbers", callback_data="menu_numbers"),
+            InlineKeyboardButton("📋 Copy Numbers (দেশভিত্তিক)", callback_data="menu_numbers"),
             InlineKeyboardButton("🔍 Keywords List", callback_data="list_keywords")
         ],
         [
@@ -240,7 +372,8 @@ def get_main_keyboard():
 def get_status_text():
     state_str = "🟢 Running (সক্রিয়)" if config["is_running"] else "🔴 Stopped (বন্ধ)"
     kw_str = ", ".join(config["keywords"]) if config["keywords"] else "(কোন কিওয়ার্ড নেই - সব আসবে)"
-    total_saved_nums = len(config.get("collected_numbers", []))
+    total_active_nums = len(config.get("collected_numbers", []))
+    total_consumed = len(config.get("consumed_numbers", []))
     total_admins = len(config.get("admins", [SUPER_ADMIN_ID]))
     return (
         f"🤖 <b>SMS Monitor Bot Control Panel</b>\n"
@@ -250,48 +383,12 @@ def get_status_text():
         f"🔍 <b>সার্চ কিওয়ার্ড:</b> <code>{kw_str}</code>\n"
         f"🎯 <b>টার্গেট গ্রুপ:</b> <code>{config['group_id']}</code>\n"
         f"📈 <b>মোট প্রেরিত SMS:</b> <code>{config['total_sent']} টি</code>\n"
-        f"📱 <b>সংগৃহীত নাম্বার:</b> <code>{total_saved_nums} টি</code>\n"
+        f"📱 <b>সক্রিয় সংগৃহীত নাম্বার:</b> <code>{total_active_nums} টি</code>\n"
+        f"🗑 <b>কপিকৃত/ব্যবহৃত নাম্বার:</b> <code>{total_consumed} টি</code>\n"
         f"👥 <b>মোট এডমিন:</b> <code>{total_admins} জন</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<i>নিচের বাটনগুলো ব্যবহার করে সবকিছু কন্ট্রোল করুন:</i>"
     )
-
-def render_numbers_menu(count=30):
-    nums = config.get("collected_numbers", [])
-    total = len(nums)
-    if total == 0:
-        text = (
-            "📱 <b>বর্তমানে কোনো নাম্বার সংরক্ষিত নেই।</b>\n\n"
-            "নতুন SMS আসামাত্র নাম্বার স্বয়ংক্রিয়ভাবে এখানে যুক্ত হবে।"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
-        return text, InlineKeyboardMarkup(keyboard)
-
-    subset = nums[-count:] if count > 0 else nums
-    num_list_text = "\n".join([f"+{n}" for n in reversed(subset)])
-
-    text = (
-        f"📋 <b>সংগৃহীত নাম্বারসমূহ (মোট {total} টি):</b>\n"
-        f"<i>(নিচের কোড বক্সে ট্যাপ করলেই সবগুলো নাম্বার একসাথে কপি হয়ে যাবে)</i>\n\n"
-        f"<pre>{num_list_text}</pre>\n"
-        f"<i>দেখানো হচ্ছে: সর্বশেষ {len(subset)} টি নাম্বার</i>"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton("📋 শেষ ২০টি", callback_data="show_num_20"),
-            InlineKeyboardButton("📋 শেষ ৫০টি", callback_data="show_num_50"),
-            InlineKeyboardButton("📋 সব নাম্বার", callback_data="show_num_all")
-        ],
-        [
-            InlineKeyboardButton("📥 ডাউনলোড (.txt)", callback_data="download_numbers"),
-            InlineKeyboardButton("🧹 ক্লিয়ার লিস্ট", callback_data="clear_numbers")
-        ],
-        [
-            InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
-        ]
-    ]
-    return text, InlineKeyboardMarkup(keyboard)
 
 def render_admins_menu():
     admins = config.get("admins", [SUPER_ADMIN_ID])
@@ -342,7 +439,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def numbers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
-    text, keyboard = render_numbers_menu(count=30)
+    text, keyboard = render_country_selection_menu()
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -543,7 +640,7 @@ async def check_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-# --- Text Input Handler (for interactive adding admin) ---
+# --- Text Input Handler ---
 
 async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -559,7 +656,6 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=kb)
             return
 
-        # Expecting numeric Telegram ID
         try:
             new_id = int(text)
             if new_id in config["admins"]:
@@ -679,41 +775,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
     elif data == "menu_numbers":
-        text, keyboard = render_numbers_menu(count=30)
+        text, keyboard = render_country_selection_menu()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data == "show_num_20":
-        text, keyboard = render_numbers_menu(count=20)
+    elif data.startswith("view_c_"):
+        iso = data[len("view_c_"):]
+        text, keyboard = render_country_numbers_view(iso)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data == "show_num_50":
-        text, keyboard = render_numbers_menu(count=50)
+    elif data.startswith("consume_c_"):
+        iso = data[len("consume_c_"):]
+        count, consumed_list = consume_numbers_for_country(iso)
+        if count > 0:
+            await query.answer(
+                f"✅ {count}টি নাম্বার সংগ্রহ তালিকা থেকে ডিলিট হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না!",
+                show_alert=True
+            )
+        else:
+            await query.answer("কোনো সক্রিয় নাম্বার পাওয়া যায়নি!", show_alert=True)
+        text, keyboard = render_country_selection_menu()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data == "show_num_all":
-        text, keyboard = render_numbers_menu(count=150)
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-    elif data == "download_numbers":
-        nums = config.get("collected_numbers", [])
-        if not nums:
-            await query.answer("কোনো সংরক্ষিত নাম্বার নেই!", show_alert=True)
+    elif data.startswith("down_consume_c_"):
+        iso = data[len("down_consume_c_"):]
+        groups = group_numbers_by_country()
+        country_title = groups.get(iso, {}).get("country", iso) if iso != "ALL" else "All_Countries"
+        
+        count, consumed_list = consume_numbers_for_country(iso)
+        if count == 0:
+            await query.answer("কোনো নাম্বার পাওয়া যায়নি!", show_alert=True)
+            text, keyboard = render_country_selection_menu()
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
             return
-        content = "\n".join([f"+{n}" for n in nums])
+
+        content = "\n".join([f"+{n}" for n in consumed_list])
         file_obj = io.BytesIO(content.encode("utf-8"))
-        file_obj.name = "collected_numbers.txt"
+        filename = f"{country_title}_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        file_obj.name = filename
+
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=file_obj,
-            filename="collected_numbers.txt",
-            caption=f"📋 মোট {len(nums)} টি নাম্বারের লিস্ট ফাইল আকারে পাঠানো হলো।"
+            filename=filename,
+            caption=(
+                f"📋 <b>{country_title}</b>-এর মোট {count}টি নাম্বারের ফাইল।\n"
+                f"<i>এই নাম্বারগুলো সংগ্রহ তালিকা থেকে মুছে দেওয়া হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না।</i>"
+            ),
+            parse_mode="HTML"
         )
-        await query.answer("ফাইল পাঠানো হয়েছে!")
-
-    elif data == "clear_numbers":
-        config["collected_numbers"] = []
-        save_config(config)
-        text, keyboard = render_numbers_menu(count=0)
+        await query.answer("✅ ফাইল পাঠানো হয়েছে ও নাম্বার ডিলিট হয়েছে!", show_alert=True)
+        text, keyboard = render_country_selection_menu()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
     elif data == "list_keywords":
@@ -827,7 +938,6 @@ async def process_sms_check(app):
                 continue
 
             for rec in records:
-                # CLI doesn't matter: if keyword is in the SMS message, CLI, or Number, accept it!
                 if kw:
                     kw_lower = kw.lower().strip()
                     msg_lower = rec.get("message", "").lower()
@@ -843,10 +953,12 @@ async def process_sms_check(app):
                     config["total_sent"] += 1
                     new_sent_count += 1
 
-                    # Save collected number for 1-tap copying
+                    # Collect number ONLY if it has never been copied/consumed before:
                     raw_num = str(rec.get("number", "")).strip()
                     if raw_num:
-                        if raw_num not in config["collected_numbers"]:
+                        consumed = config.get("consumed_numbers", [])
+                        collected = config.get("collected_numbers", [])
+                        if raw_num not in consumed and raw_num not in collected:
                             config["collected_numbers"].append(raw_num)
 
                     # Send to Telegram Group
@@ -905,7 +1017,9 @@ async def handle_health_check(request):
         "status": "online",
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
-        "keywords": config.get("keywords", [])
+        "keywords": config.get("keywords", []),
+        "collected_numbers_count": len(config.get("collected_numbers", [])),
+        "consumed_numbers_count": len(config.get("consumed_numbers", []))
     })
 
 async def start_web_server():
