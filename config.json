@@ -7,8 +7,10 @@
   "keywords": [
     "Telegram"
   ],
-  "interval": 2,
+  "interval": 1,
   "is_running": true,
+  "github_token": "",
+  "github_repo": "Atiar594i/sys-worker-cache-928",
   "total_sent": 226,
   "seen_hashes": [
     "42502d8a21b7d3b6305af8e776605cf0",

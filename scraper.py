@@ -19,7 +19,7 @@ class FlexSMSClient:
         })
         self.ajax_url = None
         self.is_logged_in = False
-        self.server_clock_offset = 36.0
+        self.server_clock_offset = 41.5
         self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.last_login_time = 0
 
@@ -30,7 +30,9 @@ class FlexSMSClient:
             if date_str:
                 server_dt = email.utils.parsedate_to_datetime(date_str)
                 now_utc = datetime.now(timezone.utc)
-                self.server_clock_offset = (now_utc - server_dt).total_seconds()
+                offset = (now_utc - server_dt).total_seconds()
+                if 20.0 < offset < 80.0:
+                    self.server_clock_offset = offset
         except Exception:
             pass
 

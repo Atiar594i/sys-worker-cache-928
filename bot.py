@@ -7,6 +7,9 @@ import os
 import sys
 import re
 import io
+import base64
+import threading
+import requests
 import phonenumbers
 from phonenumbers import geocoder
 from aiohttp import web
@@ -41,14 +44,16 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 2,
+        "interval": 1,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
         "collected_numbers": [],
         "consumed_numbers": [],
         "admins": [SUPER_ADMIN_ID],
-        "super_admin": SUPER_ADMIN_ID
+        "super_admin": SUPER_ADMIN_ID,
+        "github_token": os.environ.get("GITHUB_TOKEN", ""),
+        "github_repo": "Atiar594i/sys-worker-cache-928"
     }
     if os.path.exists(CONFIG_FILE):
         try:
@@ -66,6 +71,76 @@ def load_config():
     elif SUPER_ADMIN_ID not in default_config["admins"]:
         default_config["admins"].append(SUPER_ADMIN_ID)
     return default_config
+
+def fetch_cloud_store():
+    token = os.environ.get("GITHUB_TOKEN") or config.get("github_token", "")
+    repo = config.get("github_repo")
+    if not token or not repo:
+        return
+    try:
+        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json"
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            content_str = base64.b64decode(res.json().get("content", "")).decode("utf-8")
+            data = json.loads(content_str)
+            cloud_consumed = data.get("consumed_numbers", [])
+            cloud_collected = data.get("collected_numbers", [])
+            
+            if "consumed_numbers" not in config:
+                config["consumed_numbers"] = []
+            for num in cloud_consumed:
+                if num not in config["consumed_numbers"]:
+                    config["consumed_numbers"].append(num)
+
+            if "collected_numbers" not in config:
+                config["collected_numbers"] = []
+            for num in cloud_collected:
+                if num not in config["consumed_numbers"] and num not in config["collected_numbers"]:
+                    config["collected_numbers"].append(num)
+
+            logger.info(f"Loaded persistent cloud store: {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected.")
+            save_config(config)
+    except Exception as e:
+        logger.error(f"Error fetching from cloud store: {e}")
+
+def sync_cloud_store():
+    token = os.environ.get("GITHUB_TOKEN") or config.get("github_token", "")
+    repo = config.get("github_repo")
+    if not token or not repo:
+        return
+    try:
+        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json"
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github.v3+json"
+        }
+        store_data = {
+            "consumed_numbers": config.get("consumed_numbers", []),
+            "collected_numbers": config.get("collected_numbers", []),
+            "last_updated": datetime.now(timezone.utc).isoformat()
+        }
+        raw_bytes = json.dumps(store_data, indent=2).encode("utf-8")
+        content_b64 = base64.b64encode(raw_bytes).decode("ascii")
+
+        res = requests.get(url, headers=headers, timeout=10)
+        payload = {
+            "message": "Sync consumed numbers store",
+            "content": content_b64
+        }
+        if res.status_code == 200:
+            payload["sha"] = res.json().get("sha")
+
+        put_res = requests.put(url, headers=headers, json=payload, timeout=10)
+        if put_res.status_code in [200, 201]:
+            logger.info("Successfully synced consumed/collected numbers to cloud store.")
+        else:
+            logger.warning(f"Failed to sync cloud store: {put_res.status_code}")
+    except Exception as e:
+        logger.error(f"Exception during cloud store sync: {e}")
 
 def save_config(config):
     try:
@@ -244,6 +319,10 @@ def consume_numbers_for_country(iso):
 
     config["collected_numbers"] = [n for n in config["collected_numbers"] if n not in to_consume]
     save_config(config)
+    try:
+        threading.Thread(target=sync_cloud_store, daemon=True).start()
+    except Exception:
+        pass
     return len(to_consume), to_consume
 
 def extract_otp(text):
@@ -295,12 +374,12 @@ def calculate_latency(panel_time_str):
         panel_dt = datetime.strptime(raw_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         now_utc = datetime.now(timezone.utc)
         
-        server_clock_offset = getattr(scraper, "server_clock_offset", 36.0)
+        server_clock_offset = getattr(scraper, "server_clock_offset", 41.5)
         server_now = now_utc - timedelta(seconds=server_clock_offset)
         
-        diff_seconds = int((server_now - panel_dt).total_seconds())
+        diff_seconds = max(0, int((server_now - panel_dt).total_seconds()))
 
-        if diff_seconds <= 1:
+        if diff_seconds <= 2:
             return "1s (Instant)"
         elif diff_seconds < 60:
             return f"{diff_seconds}s"
@@ -1052,7 +1131,7 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        interval = max(1, int(config.get("interval", 2)))
+        interval = max(1, int(config.get("interval", 1)))
         await asyncio.sleep(interval)
 
 async def handle_health_check(request):
@@ -1077,9 +1156,11 @@ async def start_web_server():
     logger.info(f"Render health-check web server listening on port {port}")
 
 async def post_init(application):
+    # Restore persistent cloud store before running loops
+    await asyncio.to_thread(fetch_cloud_store)
     application.create_task(start_web_server())
     application.create_task(background_monitoring_loop(application))
-    logger.info("Background monitor & Render web server successfully scheduled.")
+    logger.info("Persistent store restored. Background monitor & Render web server successfully scheduled.")
 
 def main():
     token = config.get("bot_token")
