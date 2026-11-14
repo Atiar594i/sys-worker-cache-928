@@ -653,8 +653,16 @@ def render_accounts_menu():
     statuses = scraper.get_accounts_status()
     total = len(statuses)
     lines = []
+    secondary_accounts = []
+    main_u = config.get("username", "Atiar59_FD").strip()
+    
     for s in statuses:
-        lines.append(f"• <code>{s['username']}</code> — {s['status']}")
+        u = s['username']
+        is_main = (u.lower() == main_u.lower())
+        tag = " 👑 (মূল একাউন্ট)" if is_main else " (সাব-একাউন্ট)"
+        lines.append(f"• <code>{u}</code>{tag} — {s['status']}")
+        if not is_main:
+            secondary_accounts.append(u)
     
     text = (
         f"🔑 <b>পোর্টাল একাউন্ট প্যানেল (Multi-Account)</b>\n"
@@ -662,20 +670,27 @@ def render_accounts_menu():
         f"📋 <b>সংযুক্ত একাউন্ট তালিকা (মোট {total} টি):</b>\n"
         + "\n".join(lines) + "\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <b>টিপস:</b> একাধিক একাউন্ট যুক্ত থাকলে বট প্রতিবারে একাউন্ট অদলবদল (Round-Robin) করে ডাটা চেক করে। "
-        f"এতে পোর্টাল সার্ভার কখনোই রেট-লিমিট বা ব্লক (429) করতে পারে না এবং ১ সেকেন্ডে সুপারফাস্ট কোড আসে।\n\n"
-        f"<i>নতুন একাউন্ট যোগ করতে বা কোনো একাউন্ট সরাতে নিচের বাটনে চাপুন:</i>"
+        f"💡 <b>নিয়মাবলী:</b>\n"
+        f"• মূল একাউন্ট <code>{main_u}</code> সার্বক্ষণিক সক্রিয় থেকে স্বাভাবিকভাবে চলবে।\n"
+        f"• নতুন সাব-একাউন্ট যুক্ত করলে বট স্বয়ংক্রিয়ভাবে অদলবদল (Round-Robin) করে ডাটা চেক করবে, যাতে কোনো সার্ভার রেট-লিমিট বা ব্লক না আসে।\n\n"
+        f"<i>নতুন একাউন্ট যোগ করতে বা কোনো সাব-একাউন্ট পরিচালনা করতে নিচের বাটনে চাপুন:</i>"
     )
+    
     keyboard = [
         [
-            InlineKeyboardButton("➕ একাউন্ট যোগ (Add)", callback_data="prompt_add_account"),
-            InlineKeyboardButton("🔄 রি-লগইন টেস্ট (Test)", callback_data="test_accounts_login")
-        ],
-        [
-            InlineKeyboardButton("➖ একাউন্ট রিমুভ (Remove)", callback_data="menu_del_account"),
-            InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+            InlineKeyboardButton("➕ নতুন একাউন্ট যোগ", callback_data="prompt_add_account"),
+            InlineKeyboardButton("🔄 স্ট্যাটাস রিফ্রেশ", callback_data="refresh_accounts_view")
         ]
     ]
+    
+    if secondary_accounts:
+        sec_buttons = []
+        for sec_u in secondary_accounts:
+            sec_buttons.append(InlineKeyboardButton(f"🔄 রি-লগইন: {sec_u}", callback_data=f"relogin_acc_{sec_u}"))
+        keyboard.append(sec_buttons)
+        keyboard.append([InlineKeyboardButton("➖ সাব-একাউন্ট রিমুভ (Remove)", callback_data="menu_del_account")])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
     return text, InlineKeyboardMarkup(keyboard)
 
 # --- Safe Helpers for Callbacks ---
@@ -778,14 +793,15 @@ async def del_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ <b>ব্যবহার করার নিয়ম:</b> <code>/del_account &lt;username&gt;</code>", parse_mode="HTML")
         return
     target_u = context.args[0].strip()
+    main_u = config.get("username", "Atiar59_FD").strip()
+    if target_u.lower() == main_u.lower():
+        await update.message.reply_text("⛔ মূল একাউন্ট ডিলিট করা যাবে না!", parse_mode="HTML")
+        return
     accounts = config.get("accounts", [])
-    if len(accounts) <= 1:
-        await update.message.reply_text("⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে, এটি ডিলিট করা যাবে না!", parse_mode="HTML")
+    if not any(a.get("username").lower() == target_u.lower() for a in accounts):
+        await update.message.reply_text(f"❌ সাব-একাউন্ট <code>{target_u}</code> তালিকায় নেই!", parse_mode="HTML")
         return
-    if not any(a.get("username") == target_u for a in accounts):
-        await update.message.reply_text(f"❌ একাউন্ট <code>{target_u}</code> তালিকায় নেই!", parse_mode="HTML")
-        return
-    config["accounts"] = [a for a in accounts if a.get("username") != target_u]
+    config["accounts"] = [a for a in accounts if a.get("username").lower() != target_u.lower()]
     scraper.update_accounts(config["accounts"])
     save_config(config)
     try:
@@ -794,7 +810,7 @@ async def del_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
     text_menu, kb = render_accounts_menu()
     await update.message.reply_text(
-        f"🗑 একাউন্ট <code>{target_u}</code> সফলভাবে রিমুভ করা হয়েছে!\n\n" + text_menu,
+        f"🗑 সাব-একাউন্ট <code>{target_u}</code> সফলভাবে রিমুভ করা হয়েছে!\n\n" + text_menu,
         reply_markup=kb,
         parse_mode="HTML"
     )
@@ -1252,44 +1268,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
 
-        elif data == "test_accounts_login":
-            await safe_answer(query, "🔄 সকল একাউন্ট লগইন টেস্ট করা হচ্ছে...")
-            await asyncio.to_thread(scraper.login_all)
+        elif data == "refresh_accounts_view":
+            text, keyboard = render_accounts_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+            await safe_answer(query, "🔄 একাউন্ট স্ট্যাটাস রিফ্রেশ করা হয়েছে!")
+
+        elif data.startswith("relogin_acc_"):
+            sec_u = data[len("relogin_acc_"):]
+            await safe_answer(query, f"🔄 {sec_u} লগইন করা হচ্ছে...")
+            success = await asyncio.to_thread(scraper.login_account, sec_u)
+            if success:
+                await safe_answer(query, f"✅ {sec_u} লগইন সফল হয়েছে!", show_alert=True)
+            else:
+                await safe_answer(query, f"❌ {sec_u} লগইন ব্যর্থ হয়েছে! পাসওয়ার্ড বা ক্যাপচা চেক করুন।", show_alert=True)
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
         elif data == "menu_del_account":
             await safe_answer(query)
             accounts = config.get("accounts", [])
-            if len(accounts) <= 1:
-                await safe_answer(query, "⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে, এটি ডিলিট করা যাবে না!", show_alert=True)
+            main_u = config.get("username", "Atiar59_FD").strip()
+            removable = [a for a in accounts if a.get("username").lower() != main_u.lower()]
+            if not removable:
+                await safe_answer(query, "⚠️ কোনো সাব-একাউন্ট নেই! মূল একাউন্ট ডিলিট করা যাবে না।", show_alert=True)
                 return
             keyboard = []
-            for acc in accounts:
+            for acc in removable:
                 u = acc.get("username")
                 keyboard.append([InlineKeyboardButton(f"❌ Remove {u}", callback_data=f"del_account_{u}")])
             keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_accounts")])
             await safe_edit_message(
                 query,
-                "➖ <b>যে একাউন্টটি সরাতে চান নির্বাচন করুন:</b>",
+                "➖ <b>যে সাব-একাউন্টটি সরাতে চান নির্বাচন করুন:</b>\n<i>(মূল একাউন্ট মোছা যাবে না)</i>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
 
         elif data.startswith("del_account_"):
             target_u = data[len("del_account_"):]
-            accounts = config.get("accounts", [])
-            if len(accounts) <= 1:
-                await safe_answer(query, "⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে!", show_alert=True)
+            main_u = config.get("username", "Atiar59_FD").strip()
+            if target_u.lower() == main_u.lower():
+                await safe_answer(query, "⛔ মূল একাউন্ট ডিলিট করা যাবে না!", show_alert=True)
                 return
-            config["accounts"] = [a for a in accounts if a.get("username") != target_u]
+            accounts = config.get("accounts", [])
+            config["accounts"] = [a for a in accounts if a.get("username").lower() != target_u.lower()]
             scraper.update_accounts(config["accounts"])
             save_config(config)
             try:
                 threading.Thread(target=sync_cloud_store, daemon=True).start()
             except Exception:
                 pass
-            await safe_answer(query, f"একাউন্ট {target_u} রিমুভ হয়েছে!")
+            await safe_answer(query, f"সাব-একাউন্ট {target_u} রিমুভ হয়েছে!", show_alert=True)
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 

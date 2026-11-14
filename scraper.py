@@ -294,6 +294,13 @@ class FlexSMSClientPool:
                 })
             return statuses
 
+    def login_account(self, username):
+        with self.lock:
+            client = self.clients.get(username)
+        if client:
+            return client.login()
+        return False
+
     def login_all(self):
         with self.lock:
             client_items = list(self.clients.items())
