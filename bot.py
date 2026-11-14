@@ -31,6 +31,7 @@ logger = logging.getLogger("SMSMonitorBot")
 
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 SUPER_ADMIN_ID = 5597944494
+BOT_STARTUP_TIME = datetime.now(timezone.utc)
 
 def load_config():
     default_config = {
@@ -177,7 +178,10 @@ def render_country_selection_menu():
         keyboard.append(row)
 
     keyboard.append([InlineKeyboardButton(f"🌐 সব দেশের নাম্বার একসাথে ({total}টি)", callback_data="view_c_ALL")])
-    keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
+    keyboard.append([
+        InlineKeyboardButton("🔄 রিফ্রেশ (Refresh)", callback_data="refresh_numbers"),
+        InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+    ])
 
     return text, InlineKeyboardMarkup(keyboard)
 
@@ -215,6 +219,7 @@ def render_country_numbers_view(iso):
             InlineKeyboardButton("📥 ডাউনলোড ও ডিলিট (.txt)", callback_data=f"down_consume_c_{iso}")
         ],
         [
+            InlineKeyboardButton("🔄 রিফ্রেশ (Refresh)", callback_data=f"refresh_view_c_{iso}"),
             InlineKeyboardButton("🔙 দেশ তালিকায় ফিরে যান", callback_data="menu_numbers")
         ]
     ]
@@ -778,10 +783,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, keyboard = render_country_selection_menu()
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
+    elif data == "refresh_numbers":
+        text, keyboard = render_country_selection_menu()
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await query.answer("🔄 দেশভিত্তিক নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
+        except Exception:
+            await query.answer("ইতিমধ্যেই লেটেস্ট তালিকায় আছেন!")
+
     elif data.startswith("view_c_"):
         iso = data[len("view_c_"):]
         text, keyboard = render_country_numbers_view(iso)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+    elif data.startswith("refresh_view_c_"):
+        iso = data[len("refresh_view_c_"):]
+        text, keyboard = render_country_numbers_view(iso)
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+            await query.answer("🔄 এই দেশের নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
+        except Exception:
+            await query.answer("ইতিমধ্যেই লেটেস্ট তালিকায় আছেন!")
 
     elif data.startswith("consume_c_"):
         iso = data[len("consume_c_"):]
@@ -933,11 +955,25 @@ async def process_sms_check(app):
 
     for kw in search_list:
         try:
-            records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=40)
+            records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=25)
             if not records:
                 continue
 
             for rec in records:
+                # 1. Skip records from before bot startup/update:
+                rec_time_str = rec.get("time", "").strip()
+                if rec_time_str:
+                    try:
+                        rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        server_offset = getattr(scraper, "server_clock_offset", 36.0)
+                        startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
+                        if rec_dt < startup_limit:
+                            dedup_key = make_dedup_key(rec)
+                            seen_set.add(dedup_key)
+                            continue
+                    except Exception:
+                        pass
+
                 if kw:
                     kw_lower = kw.lower().strip()
                     msg_lower = rec.get("message", "").lower()
@@ -985,19 +1021,26 @@ async def process_sms_check(app):
 async def background_monitoring_loop(app):
     logger.info("Initializing background monitoring loop...")
     
-    if not config.get("seen_hashes"):
-        logger.info("First run detected. Pre-seeding existing records...")
-        try:
-            initial_records = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=50)
-            if initial_records:
-                for r in initial_records:
+    # Pre-seed existing records on startup/update so zero previous messages are sent to group
+    try:
+        keywords = config.get("keywords", [])
+        search_targets = list(keywords)
+        if "" not in search_targets:
+            search_targets.append("")
+        
+        logger.info(f"Pre-seeding existing records on startup/update for targets: {search_targets}")
+        for target_kw in search_targets:
+            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=target_kw, display_length=50)
+            if init_recs:
+                for r in init_recs:
                     k = make_dedup_key(r)
                     seen_set.add(k)
-                    config["seen_hashes"].append(k)
-                save_config(config)
-                logger.info(f"Pre-seeded {len(initial_records)} existing records to seen cache.")
-        except Exception as e:
-            logger.error(f"Error pre-seeding records: {e}")
+                    if k not in config["seen_hashes"]:
+                        config["seen_hashes"].append(k)
+        save_config(config)
+        logger.info(f"Startup pre-seeding done. Seen hashes count: {len(seen_set)}. No old messages will be sent.")
+    except Exception as e:
+        logger.error(f"Error pre-seeding startup records: {e}")
 
     while True:
         try:

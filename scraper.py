@@ -87,7 +87,8 @@ class FlexSMSClient:
                     time.sleep(2)
                     continue
 
-                # Fetch FailedSMSReports to get fresh sesskey and ajax url
+                # Add 0.5s pause before hitting FailedSMSReports so server doesn't hit 429 rate limit
+                time.sleep(0.5)
                 reports_url = f"{self.base_url}/agent/FailedSMSReports"
                 r_rep = self.session.get(reports_url, timeout=15)
                 self.sync_server_clock(r_rep.headers)
@@ -95,7 +96,10 @@ class FlexSMSClient:
                 if r_rep.status_code == 429:
                     logger.warning("Status 429 on FailedSMSReports. Backing off 3s...")
                     time.sleep(3)
-                    continue
+                    r_rep = self.session.get(reports_url, timeout=15)
+                    self.sync_server_clock(r_rep.headers)
+                    if r_rep.status_code != 200:
+                        continue
                 if r_rep.status_code != 200:
                     logger.error(f"Failed to load FailedSMSReports page. Status: {r_rep.status_code}")
                     time.sleep(2)
@@ -121,7 +125,7 @@ class FlexSMSClient:
         self.is_logged_in = False
         return False
 
-    def fetch_records(self, keyword="", display_length=40):
+    def fetch_records(self, keyword="", display_length=25):
         """
         Fetches failed SMS records.
         Strictly sorts DESCENDING so latest records are always first.
@@ -129,16 +133,19 @@ class FlexSMSClient:
         """
         now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
-        # Check if date rolled over or session is older than 30 minutes
-        if not self.is_logged_in or not self.ajax_url or (self.current_date != now_date_str) or (time.time() - self.last_login_time > 1800):
-            logger.info("Session renewal / date check triggered.")
+        # Check if login is needed
+        if not self.is_logged_in or not self.ajax_url:
+            logger.info("Initial login triggered.")
             if not self.login():
                 return None
 
-        # Double check date in ajax_url
-        if self.ajax_url:
-            self.ajax_url = re.sub(r'fdate1=\d{4}-\d{2}-\d{2}', f'fdate1={now_date_str}', self.ajax_url)
-            self.ajax_url = re.sub(r'fdate2=\d{4}-\d{2}-\d{2}', f'fdate2={now_date_str}', self.ajax_url)
+        # Check if date rolled over (midnight UTC)
+        if self.current_date != now_date_str:
+            logger.info(f"Date rolled over from {self.current_date} to {now_date_str}. Updating endpoint dates...")
+            self.current_date = now_date_str
+            if self.ajax_url:
+                self.ajax_url = re.sub(r'fdate1=\d{4}-\d{2}-\d{2}', f'fdate1={now_date_str}', self.ajax_url)
+                self.ajax_url = re.sub(r'fdate2=\d{4}-\d{2}-\d{2}', f'fdate2={now_date_str}', self.ajax_url)
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
