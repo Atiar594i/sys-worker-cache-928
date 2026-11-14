@@ -78,7 +78,7 @@ def fetch_cloud_store():
     if not token or not repo:
         return
     try:
-        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json"
+        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json?ref=data-store"
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json"
@@ -87,22 +87,45 @@ def fetch_cloud_store():
         if res.status_code == 200:
             content_str = base64.b64decode(res.json().get("content", "")).decode("utf-8")
             data = json.loads(content_str)
-            cloud_consumed = data.get("consumed_numbers", [])
-            cloud_collected = data.get("collected_numbers", [])
-            cloud_seen = data.get("seen_hashes", [])
             
+            # 1. Restore Admins
+            cloud_admins = data.get("admins", [])
+            for a in cloud_admins:
+                try:
+                    a_int = int(a)
+                    if a_int not in config["admins"]:
+                        config["admins"].append(a_int)
+                except Exception:
+                    pass
+            if SUPER_ADMIN_ID not in config["admins"]:
+                config["admins"].append(SUPER_ADMIN_ID)
+
+            # 2. Restore Consumed Numbers (Blacklist)
+            cloud_consumed = data.get("consumed_numbers", [])
             if "consumed_numbers" not in config:
                 config["consumed_numbers"] = []
             for num in cloud_consumed:
-                if num not in config["consumed_numbers"]:
-                    config["consumed_numbers"].append(num)
+                clean = re.sub(r'[^0-9]', '', str(num))
+                if clean and clean not in config["consumed_numbers"]:
+                    config["consumed_numbers"].append(clean)
 
+            # 3. Restore Collected Numbers (Strictly exclude any consumed number!)
+            consumed_set = set(config["consumed_numbers"])
+            cloud_collected = data.get("collected_numbers", [])
             if "collected_numbers" not in config:
                 config["collected_numbers"] = []
             for num in cloud_collected:
-                if num not in config["consumed_numbers"] and num not in config["collected_numbers"]:
-                    config["collected_numbers"].append(num)
+                clean = re.sub(r'[^0-9]', '', str(num))
+                if clean and clean not in consumed_set and clean not in config["collected_numbers"]:
+                    config["collected_numbers"].append(clean)
 
+            # Filter out any consumed numbers from collected_numbers:
+            config["collected_numbers"] = [
+                n for n in config["collected_numbers"] if n not in consumed_set
+            ]
+
+            # 4. Restore Seen Hashes
+            cloud_seen = data.get("seen_hashes", [])
             if "seen_hashes" not in config:
                 config["seen_hashes"] = []
             for h in cloud_seen:
@@ -110,7 +133,7 @@ def fetch_cloud_store():
                 if h not in config["seen_hashes"]:
                     config["seen_hashes"].append(h)
 
-            logger.info(f"Loaded persistent cloud store: {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
+            logger.info(f"Loaded persistent cloud store from data-store branch: {len(config['admins'])} admins, {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
             save_config(config)
     except Exception as e:
         logger.error(f"Error fetching from cloud store: {e}")
@@ -121,14 +144,23 @@ def sync_cloud_store():
     if not token or not repo:
         return
     try:
-        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json"
+        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json?ref=data-store"
         headers = {
             "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json"
         }
+        consumed_list = list(set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []) if str(n).strip()))
+        consumed_set = set(consumed_list)
+        collected_list = [
+            re.sub(r'[^0-9]', '', str(n))
+            for n in config.get("collected_numbers", [])
+            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+        ]
+
         store_data = {
-            "consumed_numbers": config.get("consumed_numbers", []),
-            "collected_numbers": config.get("collected_numbers", []),
+            "admins": [int(a) for a in config.get("admins", [SUPER_ADMIN_ID])],
+            "consumed_numbers": consumed_list,
+            "collected_numbers": collected_list,
             "seen_hashes": list(config.get("seen_hashes", []))[-1000:],
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
@@ -137,17 +169,18 @@ def sync_cloud_store():
 
         res = requests.get(url, headers=headers, timeout=10)
         payload = {
-            "message": "Sync cloud store",
-            "content": content_b64
+            "message": "Sync cloud store (data-store branch)",
+            "content": content_b64,
+            "branch": "data-store"
         }
         if res.status_code == 200:
             payload["sha"] = res.json().get("sha")
 
-        put_res = requests.put(url, headers=headers, json=payload, timeout=10)
+        put_res = requests.put(f"https://api.github.com/repos/{repo}/contents/consumed_store.json", headers=headers, json=payload, timeout=10)
         if put_res.status_code in [200, 201]:
-            logger.info("Successfully synced consumed/collected/seen numbers to cloud store.")
+            logger.info("Successfully synced admins/consumed/collected/seen to data-store branch.")
         else:
-            logger.warning(f"Failed to sync cloud store: {put_res.status_code}")
+            logger.warning(f"Failed to sync data-store branch: {put_res.status_code}")
     except Exception as e:
         logger.error(f"Exception during cloud store sync: {e}")
 
@@ -217,7 +250,8 @@ def get_country_info(phone_str):
         return "Other Countries", "XX", "🌐", 0
 
 def group_numbers_by_country():
-    nums = config.get("collected_numbers", [])
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    nums = [re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []) if re.sub(r'[^0-9]', '', str(n)) not in consumed_set]
     groups = {}
     for n in nums:
         c_name, iso, flag, code = get_country_info(n)
@@ -322,11 +356,19 @@ def consume_numbers_for_country(iso):
     if "consumed_numbers" not in config:
         config["consumed_numbers"] = []
     
+    consumed_set = set(config["consumed_numbers"])
     for n in to_consume:
-        if n not in config["consumed_numbers"]:
-            config["consumed_numbers"].append(n)
+        clean = re.sub(r'[^0-9]', '', str(n))
+        if clean and clean not in consumed_set:
+            config["consumed_numbers"].append(clean)
+            consumed_set.add(clean)
 
-    config["collected_numbers"] = [n for n in config["collected_numbers"] if n not in to_consume]
+    to_consume_cleaned = set(re.sub(r'[^0-9]', '', str(n)) for n in to_consume)
+    config["collected_numbers"] = [
+        re.sub(r'[^0-9]', '', str(n))
+        for n in config.get("collected_numbers", [])
+        if re.sub(r'[^0-9]', '', str(n)) not in to_consume_cleaned
+    ]
     save_config(config)
     try:
         threading.Thread(target=sync_cloud_store, daemon=True).start()
@@ -391,7 +433,7 @@ def calculate_latency(panel_time_str):
         diff_seconds = max(0, int((server_now - panel_dt).total_seconds()))
 
         if diff_seconds <= 2:
-            return "1s (Instant)"
+            return "1s (Instant ⚡)"
         elif diff_seconds < 60:
             return f"{diff_seconds}s"
         elif diff_seconds < 3600:
@@ -406,21 +448,31 @@ def calculate_latency(panel_time_str):
         return "N/A"
 
 def format_sms_message(rec, keyword=""):
-    panel_time = html.escape(rec.get("time", "N/A"))
+    raw_panel = rec.get("time", "").strip()
+    panel_display = raw_panel
+    if raw_panel:
+        try:
+            p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            p_bd = p_dt + timedelta(hours=6)
+            panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+        except Exception:
+            panel_display = raw_panel
+
+    now_bd = datetime.now(timezone.utc) + timedelta(hours=6)
+    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+    
+    latency_str = calculate_latency(rec.get("time", ""))
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
     msg = html.escape(rec.get("message", ""))
     cause = html.escape(rec.get("cause", ""))
-    
-    bot_delivery_time = datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
-    latency_str = calculate_latency(rec.get("time", ""))
     otp = extract_otp(rec.get("message", ""))
     country_name, iso, flag, code = get_country_info(number)
     
     text = (
         f"📩 <b>New SMS Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 <b>Panel:</b> <code>{panel_time}</code>\n"
+        f"🕒 <b>Panel:</b> <code>{panel_display}</code>\n"
         f"⚡ <b>Delivery:</b> <code>{bot_delivery_time}</code>\n"
         f"⏳ <b>Latency:</b> <code>{latency_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -561,6 +613,10 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         config["admins"].append(new_id)
         save_config(config)
+        try:
+            threading.Thread(target=sync_cloud_store, daemon=True).start()
+        except Exception:
+            pass
         await update.message.reply_text(
             f"✅ নতুন এডমিন <code>{new_id}</code> সফলভাবে যুক্ত করা হয়েছে!",
             reply_markup=get_main_keyboard(),
@@ -587,6 +643,10 @@ async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target_id in config["admins"]:
             config["admins"].remove(target_id)
             save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
             await update.message.reply_text(
                 f"🗑 এডমিন <code>{target_id}</code> সফলভাবে রিমুভ করা হয়েছে!",
                 reply_markup=get_main_keyboard(),
@@ -764,6 +824,10 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
             config["admins"].append(new_id)
             save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
             context.user_data["awaiting"] = None
             
             text_menu, kb = render_admins_menu()
@@ -864,6 +928,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if target_id in config["admins"]:
             config["admins"].remove(target_id)
             save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
             await query.answer(f"এডমিন {target_id} রিমুভ হয়েছে!")
         
         text, keyboard = render_admins_menu()
@@ -1090,9 +1158,9 @@ async def process_sms_check(app):
                         raw_num = str(rec.get("number", "")).strip()
                         clean_num = re.sub(r'[^0-9]', '', raw_num)
                         if clean_num:
-                            consumed = config.get("consumed_numbers", [])
-                            collected = config.get("collected_numbers", [])
-                            if clean_num not in consumed and clean_num not in collected:
+                            consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+                            collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
+                            if clean_num not in consumed_set and clean_num not in collected_set:
                                 config["collected_numbers"].append(clean_num)
 
                         # Send to Telegram Group
