@@ -72,9 +72,9 @@ class FlexSMSClient:
                 self.sync_server_clock(r.headers)
                 
                 if r.status_code == 429:
-                    logger.warning(f"Status 429 received on login for {self.username}. Backing off 3s...")
-                    self.rate_limited_until = time.time() + 25
-                    time.sleep(3)
+                    logger.warning(f"Status 429 received on login for {self.username}. Backing off 2s...")
+                    self.rate_limited_until = time.time() + 2.5
+                    time.sleep(2)
                     continue
                 if r.status_code != 200:
                     logger.error(f"Failed to load login page. Status: {r.status_code}")
@@ -109,9 +109,9 @@ class FlexSMSClient:
                 self.sync_server_clock(r_rep.headers)
                 
                 if r_rep.status_code == 429:
-                    logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 3s...")
-                    self.rate_limited_until = time.time() + 25
-                    time.sleep(3)
+                    logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 2s...")
+                    self.rate_limited_until = time.time() + 2.5
+                    time.sleep(2)
                     r_rep = self.session.get(reports_url, timeout=15)
                     self.sync_server_clock(r_rep.headers)
                     if r_rep.status_code != 200:
@@ -198,8 +198,8 @@ class FlexSMSClient:
             
             # Check rate limit
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 25s.")
-                self.rate_limited_until = time.time() + 25
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 2.5s.")
+                self.rate_limited_until = time.time() + 2.5
                 return None
 
             # Check for session expiration indicators
@@ -308,6 +308,26 @@ class FlexSMSClientPool:
         for u, client in client_items:
             results[u] = client.login()
         return results
+
+    def get_available_client(self, min_rest=0.8):
+        with self.lock:
+            now = time.time()
+            available = [
+                c for c in self.clients.values()
+                if not getattr(c, 'is_busy', False)
+                and c.rate_limited_until <= now
+                and (now - getattr(c, 'last_finish', 0.0)) >= min_rest
+            ]
+            if not available:
+                return None
+            best = min(available, key=lambda c: getattr(c, 'last_finish', 0.0))
+            best.is_busy = True
+            return best
+
+    def release_client(self, client):
+        with self.lock:
+            client.is_busy = False
+            client.last_finish = time.time()
 
     def fetch_records(self, keyword="", display_length=15):
         with self.lock:

@@ -1588,23 +1588,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 sms_check_lock = asyncio.Lock()
 
-async def process_sms_check(app):
-    async with sms_check_lock:
-        keywords = config.get("keywords", [])
-        group_id = config.get("group_id")
-        new_sent_count = 0
+async def process_sms_check(app, client=None):
+    keywords = config.get("keywords", [])
+    group_id = config.get("group_id")
+    new_sent_count = 0
 
-        # Strictly query portal with targeted keyword (e.g. Telegram)
-        # so zero Telegram messages are ever buried or missed by high-volume traffic from other apps!
-        search_query = keywords[0] if len(keywords) == 1 else ""
+    # Strictly query portal with targeted keyword (e.g. Telegram)
+    # so zero Telegram messages are ever buried or missed by high-volume traffic from other apps!
+    search_query = keywords[0] if len(keywords) == 1 else ""
 
-        try:
+    try:
+        if client:
+            records = await asyncio.to_thread(client.fetch_records, keyword=search_query, display_length=20)
+        else:
             records = await asyncio.to_thread(scraper.fetch_records, keyword=search_query, display_length=20)
-            if not records:
-                return 0
+        if not records:
+            return 0
 
-            records.sort(key=lambda r: str(r.get("time", "")))
+        records.sort(key=lambda r: str(r.get("time", "")))
 
+        async with sms_check_lock:
             for rec in records:
                 if keywords:
                     msg_lower = rec.get("message", "").lower()
@@ -1614,6 +1617,9 @@ async def process_sms_check(app):
                     for k in keywords:
                         k_low = k.lower().strip()
                         if k_low in msg_lower or k_low in cli_lower or k_low in num_lower:
+                            matched_kw = k
+                            break
+                        if k_low == "telegram" and ("tg" in cli_lower or "telegr" in cli_lower or "tg" in msg_lower):
                             matched_kw = k
                             break
                     if not matched_kw:
@@ -1647,17 +1653,23 @@ async def process_sms_check(app):
                     except Exception as send_err:
                         logger.error(f"Failed to send message to group: {send_err}")
 
-        except Exception as e:
-            logger.error(f"Error checking records: {e}")
+            if new_sent_count > 0:
+                save_config(config)
+                try:
+                    threading.Thread(target=sync_cloud_store, daemon=True).start()
+                except Exception:
+                    pass
 
-        if new_sent_count > 0:
-            save_config(config)
-            try:
-                threading.Thread(target=sync_cloud_store, daemon=True).start()
-            except Exception:
-                pass
+    except Exception as e:
+        logger.error(f"Error checking records: {e}")
 
-        return new_sent_count
+    return new_sent_count
+
+async def check_client_task(app, client):
+    try:
+        await process_sms_check(app, client=client)
+    finally:
+        scraper.release_client(client)
 
 async def background_monitoring_loop(app):
     logger.info("Initializing background monitoring loop...")
@@ -1697,28 +1709,23 @@ async def background_monitoring_loop(app):
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
 
-    # 2. Continuous real-time monitoring loop with safe adaptive interval:
+    # 2. Continuous Orchestrated Monitoring Loop:
+    # Staggers multiple accounts so incoming SMS are detected and sent strictly within 1 to 3 seconds!
     while True:
         try:
             if config.get("is_running", False):
-                await process_sms_check(app)
+                acc_count = max(1, len(config.get("accounts", [])))
+                min_rest = 0.8 if acc_count >= 2 else 0.5
+                client = scraper.get_available_client(min_rest=min_rest)
+                if client:
+                    asyncio.create_task(check_client_task(app, client))
         except asyncio.CancelledError:
             logger.info("Background loop cancelled.")
             break
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # Turbo adaptive interval:
-        # With 2+ accounts alternating in round-robin, each account gets >2.2s resting window.
-        # 0.2s sleep ensures that continuous sequential checks detect and deliver incoming SMS instantly!
-        acc_count = max(1, len(config.get("accounts", [])))
-        if acc_count >= 2:
-            min_safe = 0.2
-        else:
-            min_safe = 1.2
-        configured_interval = float(config.get("interval", min_safe))
-        actual_interval = max(min_safe, configured_interval)
-        await asyncio.sleep(actual_interval)
+        await asyncio.sleep(0.5)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
