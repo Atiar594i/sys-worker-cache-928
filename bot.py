@@ -89,6 +89,7 @@ def fetch_cloud_store():
             data = json.loads(content_str)
             cloud_consumed = data.get("consumed_numbers", [])
             cloud_collected = data.get("collected_numbers", [])
+            cloud_seen = data.get("seen_hashes", [])
             
             if "consumed_numbers" not in config:
                 config["consumed_numbers"] = []
@@ -102,7 +103,14 @@ def fetch_cloud_store():
                 if num not in config["consumed_numbers"] and num not in config["collected_numbers"]:
                     config["collected_numbers"].append(num)
 
-            logger.info(f"Loaded persistent cloud store: {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected.")
+            if "seen_hashes" not in config:
+                config["seen_hashes"] = []
+            for h in cloud_seen:
+                seen_set.add(h)
+                if h not in config["seen_hashes"]:
+                    config["seen_hashes"].append(h)
+
+            logger.info(f"Loaded persistent cloud store: {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
             save_config(config)
     except Exception as e:
         logger.error(f"Error fetching from cloud store: {e}")
@@ -121,6 +129,7 @@ def sync_cloud_store():
         store_data = {
             "consumed_numbers": config.get("consumed_numbers", []),
             "collected_numbers": config.get("collected_numbers", []),
+            "seen_hashes": list(config.get("seen_hashes", []))[-1000:],
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
         raw_bytes = json.dumps(store_data, indent=2).encode("utf-8")
@@ -128,7 +137,7 @@ def sync_cloud_store():
 
         res = requests.get(url, headers=headers, timeout=10)
         payload = {
-            "message": "Sync consumed numbers store",
+            "message": "Sync cloud store",
             "content": content_b64
         }
         if res.status_code == 200:
@@ -136,7 +145,7 @@ def sync_cloud_store():
 
         put_res = requests.put(url, headers=headers, json=payload, timeout=10)
         if put_res.status_code in [200, 201]:
-            logger.info("Successfully synced consumed/collected numbers to cloud store.")
+            logger.info("Successfully synced consumed/collected/seen numbers to cloud store.")
         else:
             logger.warning(f"Failed to sync cloud store: {put_res.status_code}")
     except Exception as e:
@@ -356,14 +365,16 @@ def extract_otp(text):
     return None
 
 def make_dedup_key(record):
-    number = str(record.get("number", "")).strip()
+    raw_num = str(record.get("number", "")).strip()
+    clean_num = re.sub(r'[^0-9]', '', raw_num)
     message = str(record.get("message", "")).strip()
     otp = extract_otp(message)
     if otp:
-        return f"{number}_OTP_{otp}"
+        return f"{clean_num}_OTP_{otp}"
     else:
-        msg_hash = hashlib.md5(message.encode("utf-8", errors="ignore")).hexdigest()[:12]
-        return f"{number}_MSG_{msg_hash}"
+        clean_msg = " ".join(message.split())
+        msg_hash = hashlib.md5(clean_msg.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        return f"{clean_num}_MSG_{msg_hash}"
 
 def calculate_latency(panel_time_str):
     try:
@@ -1025,77 +1036,88 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Core Scraping & Group Dispatch Logic ---
 
+sms_check_lock = asyncio.Lock()
+
 async def process_sms_check(app):
-    keywords = config.get("keywords", [])
-    group_id = config.get("group_id")
-    new_sent_count = 0
+    async with sms_check_lock:
+        keywords = config.get("keywords", [])
+        group_id = config.get("group_id")
+        new_sent_count = 0
 
-    search_list = keywords if keywords else [""]
+        search_list = keywords if keywords else [""]
 
-    for kw in search_list:
-        try:
-            records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=25)
-            if not records:
-                continue
+        for kw in search_list:
+            try:
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=30)
+                if not records:
+                    continue
 
-            for rec in records:
-                # 1. Skip records from before bot startup/update:
-                rec_time_str = rec.get("time", "").strip()
-                if rec_time_str:
-                    try:
-                        rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                        server_offset = getattr(scraper, "server_clock_offset", 36.0)
-                        startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
-                        if rec_dt < startup_limit:
-                            dedup_key = make_dedup_key(rec)
-                            seen_set.add(dedup_key)
+                # Sort strictly chronological (oldest first, newest last) so messages never go backwards:
+                records.sort(key=lambda r: str(r.get("time", "")))
+
+                for rec in records:
+                    # 1. Skip records from before bot startup/update:
+                    rec_time_str = rec.get("time", "").strip()
+                    if rec_time_str:
+                        try:
+                            rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                            server_offset = getattr(scraper, "server_clock_offset", 41.5)
+                            startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
+                            if rec_dt < startup_limit:
+                                dedup_key = make_dedup_key(rec)
+                                seen_set.add(dedup_key)
+                                continue
+                        except Exception:
+                            pass
+
+                    if kw:
+                        kw_lower = kw.lower().strip()
+                        msg_lower = rec.get("message", "").lower()
+                        cli_lower = rec.get("cli", "").lower()
+                        num_lower = rec.get("number", "").lower()
+                        if kw_lower not in msg_lower and kw_lower not in cli_lower and kw_lower not in num_lower:
                             continue
-                    except Exception:
-                        pass
 
-                if kw:
-                    kw_lower = kw.lower().strip()
-                    msg_lower = rec.get("message", "").lower()
-                    cli_lower = rec.get("cli", "").lower()
-                    num_lower = rec.get("number", "").lower()
-                    if kw_lower not in msg_lower and kw_lower not in cli_lower and kw_lower not in num_lower:
-                        continue
+                    dedup_key = make_dedup_key(rec)
+                    if dedup_key not in seen_set:
+                        # Mark as seen IMMEDIATELY before dispatch to prevent duplicate sends
+                        seen_set.add(dedup_key)
+                        config["seen_hashes"].append(dedup_key)
+                        config["total_sent"] += 1
+                        new_sent_count += 1
 
-                dedup_key = make_dedup_key(rec)
-                if dedup_key not in seen_set:
-                    seen_set.add(dedup_key)
-                    config["seen_hashes"].append(dedup_key)
-                    config["total_sent"] += 1
-                    new_sent_count += 1
+                        # Collect number ONLY if it has never been copied/consumed before:
+                        raw_num = str(rec.get("number", "")).strip()
+                        clean_num = re.sub(r'[^0-9]', '', raw_num)
+                        if clean_num:
+                            consumed = config.get("consumed_numbers", [])
+                            collected = config.get("collected_numbers", [])
+                            if clean_num not in consumed and clean_num not in collected:
+                                config["collected_numbers"].append(clean_num)
 
-                    # Collect number ONLY if it has never been copied/consumed before:
-                    raw_num = str(rec.get("number", "")).strip()
-                    if raw_num:
-                        consumed = config.get("consumed_numbers", [])
-                        collected = config.get("collected_numbers", [])
-                        if raw_num not in consumed and raw_num not in collected:
-                            config["collected_numbers"].append(raw_num)
+                        # Send to Telegram Group
+                        msg_text = format_sms_message(rec, keyword=kw)
+                        try:
+                            await app.bot.send_message(
+                                chat_id=group_id,
+                                text=msg_text,
+                                parse_mode="HTML"
+                            )
+                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
+                        except Exception as send_err:
+                            logger.error(f"Failed to send message to group: {send_err}")
 
-                    # Send to Telegram Group
-                    msg_text = format_sms_message(rec, keyword=kw)
-                    try:
-                        await app.bot.send_message(
-                            chat_id=group_id,
-                            text=msg_text,
-                            parse_mode="HTML"
-                        )
-                        logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
-                        await asyncio.sleep(0.05)
-                    except Exception as send_err:
-                        logger.error(f"Failed to send message to group: {send_err}")
+            except Exception as e:
+                logger.error(f"Error checking records for keyword '{kw}': {e}")
 
-        except Exception as e:
-            logger.error(f"Error checking records for keyword '{kw}': {e}")
+        if new_sent_count > 0:
+            save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
 
-    if new_sent_count > 0:
-        save_config(config)
-
-    return new_sent_count
+        return new_sent_count
 
 async def background_monitoring_loop(app):
     logger.info("Initializing background monitoring loop...")
@@ -1109,7 +1131,7 @@ async def background_monitoring_loop(app):
         
         logger.info(f"Pre-seeding existing records on startup/update for targets: {search_targets}")
         for target_kw in search_targets:
-            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=target_kw, display_length=50)
+            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=target_kw, display_length=100)
             if init_recs:
                 for r in init_recs:
                     k = make_dedup_key(r)
@@ -1117,6 +1139,9 @@ async def background_monitoring_loop(app):
                     if k not in config["seen_hashes"]:
                         config["seen_hashes"].append(k)
         save_config(config)
+        logger.info(f"Startup pre-seeding done. Seen hashes count: {len(seen_set)}. No old messages will be sent.")
+    except Exception as e:
+        logger.error(f"Error pre-seeding startup records: {e}")
         logger.info(f"Startup pre-seeding done. Seen hashes count: {len(seen_set)}. No old messages will be sent.")
     except Exception as e:
         logger.error(f"Error pre-seeding startup records: {e}")
