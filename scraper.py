@@ -14,8 +14,17 @@ class FlexSMSClient:
         self.username = username
         self.password = password
         self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=10,
+            max_retries=1,
+            pool_block=False
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Connection': 'keep-alive'
         })
         self.ajax_url = None
         self.is_logged_in = False

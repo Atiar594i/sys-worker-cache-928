@@ -14,7 +14,13 @@ import phonenumbers
 from phonenumbers import geocoder
 from aiohttp import web
 from datetime import datetime, timezone, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -46,7 +52,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 1,
+        "interval": 0.2,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -518,6 +524,31 @@ def format_sms_message(rec, keyword=""):
     text += f"━━━━━━━━━━━━━━━━━━━━━━"
     return text
 
+def get_persistent_keyboard():
+    status_toggle_btn = "⏹ Stop Monitor" if config.get("is_running", True) else "▶️ Start Monitor"
+    keyboard = [
+        [
+            KeyboardButton("📋 কপি নাম্বার (দেশভিত্তিক)"),
+            KeyboardButton("⚡ Check Now")
+        ],
+        [
+            KeyboardButton("📊 স্ট্যাটাস রিপোর্ট"),
+            KeyboardButton(status_toggle_btn)
+        ],
+        [
+            KeyboardButton("⏱ রিফ্রেশ টাইম"),
+            KeyboardButton("🔍 কিওয়ার্ড লিস্ট")
+        ],
+        [
+            KeyboardButton("👥 এডমিন প্যানেল")
+        ]
+    ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        is_persistent=True
+    )
+
 def get_main_keyboard():
     status_btn_text = "⏹ Stop Monitor" if config["is_running"] else "▶️ Start Monitor"
     status_callback = "toggle_monitor"
@@ -565,7 +596,7 @@ def get_status_text():
         f"🗑 <b>কপিকৃত/ব্যবহৃত নাম্বার:</b> <code>{total_consumed} টি</code>\n"
         f"👥 <b>মোট এডমিন:</b> <code>{total_admins} জন</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>নিচের বাটনগুলো ব্যবহার করে সবকিছু কন্ট্রোল করুন:</i>"
+        f"<i>নিচের স্থায়ী বাটনগুলো বা ইনলাইন মেনু ব্যবহার করে সবকিছু কন্ট্রোল করুন:</i>"
     )
 
 def render_admins_menu():
@@ -619,6 +650,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         get_status_text(),
+        reply_markup=get_persistent_keyboard(),
+        parse_mode="HTML"
+    )
+    await update.message.reply_text(
+        "🎛 <b>কন্ট্রোল প্যানেল:</b>\n<i>নিচের স্থায়ী বাটনগুলো বা ইনলাইন মেনু ব্যবহার করে সহজে বট পরিচালনা করুন:</i>",
         reply_markup=get_main_keyboard(),
         parse_mode="HTML"
     )
@@ -668,7 +704,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await update.message.reply_text(
             f"✅ নতুন এডমিন <code>{new_id}</code> সফলভাবে যুক্ত করা হয়েছে!",
-            reply_markup=get_main_keyboard(),
+            reply_markup=get_persistent_keyboard(),
             parse_mode="HTML"
         )
     except ValueError:
@@ -698,7 +734,7 @@ async def del_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             await update.message.reply_text(
                 f"🗑 এডমিন <code>{target_id}</code> সফলভাবে রিমুভ করা হয়েছে!",
-                reply_markup=get_main_keyboard(),
+                reply_markup=get_persistent_keyboard(),
                 parse_mode="HTML"
             )
         else:
@@ -728,7 +764,7 @@ async def add_keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         f"✅ নতুন কিওয়ার্ড <b>{kw}</b> সফলভাবে যুক্ত করা হয়েছে!\n"
         f"🔍 বর্তমান কিওয়ার্ড তালিকা: <code>{', '.join(config['keywords'])}</code>",
-        reply_markup=get_main_keyboard(),
+        reply_markup=get_persistent_keyboard(),
         parse_mode="HTML"
     )
 
@@ -757,7 +793,7 @@ async def del_keyword_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             f"🗑 কিওয়ার্ড <b>{matched}</b> মুছে ফেলা হয়েছে!\n"
             f"🔍 বর্তমান কিওয়ার্ড তালিকা: <code>{', '.join(config['keywords']) if config['keywords'] else 'কোনটি নেই'}</code>",
-            reply_markup=get_main_keyboard(),
+            reply_markup=get_persistent_keyboard(),
             parse_mode="HTML"
         )
     else:
@@ -791,47 +827,48 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     config["keywords"] = []
     save_config(config)
-    await update.message.reply_text("🧹 সব কিওয়ার্ড মুছে ফেলা হয়েছে! এখন সব SMS সার্চ করা হবে।", reply_markup=get_main_keyboard())
+    await update.message.reply_text("🧹 সব কিওয়ার্ড মুছে ফেলা হয়েছে! এখন সব SMS সার্চ করা হবে।", reply_markup=get_persistent_keyboard())
 
 async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
     if not context.args:
+        curr_int = config.get("interval", 0.2)
         await update.message.reply_text(
-            f"⏱ বর্তমান রিফ্রেশ ইন্টারভাল: <code>{config['interval']} সেকেন্ড</code>\n"
-            f"পরিবর্তন করতে লিখুন: <code>/interval &lt;seconds&gt;</code> (যেমন: <code>/interval 1</code> বা <code>/interval 2</code>)",
+            f"⏱ বর্তমান রিফ্রেশ ইন্টারভাল: <code>{curr_int} সেকেন্ড</code>\n"
+            f"পরিবর্তন করতে লিখুন: <code>/interval &lt;seconds&gt;</code> (যেমন: <code>/interval 0.2</code> বা <code>/interval 0.5</code> বা <code>/interval 1</code>)",
             parse_mode="HTML"
         )
         return
 
     try:
-        val = int(context.args[0])
-        if val < 1:
-            await update.message.reply_text("⚠️ ইন্টারভাল কমপক্ষে ১ সেকেন্ড হতে হবে!")
+        val = float(context.args[0])
+        if val < 0.1:
+            await update.message.reply_text("⚠️ ইন্টারভাল কমপক্ষে ০.১ সেকেন্ড হতে হবে!")
             return
         config["interval"] = val
         save_config(config)
         await update.message.reply_text(
             f"✅ রিফ্রেশ ইন্টারভাল পরিবর্তন করে <b>{val} সেকেন্ড</b> নির্ধারণ করা হয়েছে!",
-            reply_markup=get_main_keyboard(),
+            reply_markup=get_persistent_keyboard(),
             parse_mode="HTML"
         )
     except ValueError:
-        await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা প্রদান করুন (যেমন: <code>/interval 2</code>)!", parse_mode="HTML")
+        await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা প্রদান করুন (যেমন: <code>/interval 0.2</code>)!", parse_mode="HTML")
 
 async def start_monitor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
     config["is_running"] = True
     save_config(config)
-    await update.message.reply_text("🟢 মনিটরিং <b>চালু</b> করা হয়েছে!", reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await update.message.reply_text("🟢 মনিটরিং <b>চালু</b> করা হয়েছে!", reply_markup=get_persistent_keyboard(), parse_mode="HTML")
 
 async def stop_monitor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
     config["is_running"] = False
     save_config(config)
-    await update.message.reply_text("🔴 মনিটরিং <b>বন্ধ</b> করা হয়েছে!", reply_markup=get_main_keyboard(), parse_mode="HTML")
+    await update.message.reply_text("🔴 মনিটরিং <b>বন্ধ</b> করা হয়েছে!", reply_markup=get_persistent_keyboard(), parse_mode="HTML")
 
 async def check_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -844,7 +881,7 @@ async def check_now_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
-# --- Text Input Handler ---
+# --- Text Input & Permanent Button Handler ---
 
 async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -866,7 +903,7 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 context.user_data["awaiting"] = None
                 await update.message.reply_text(
                     f"⚠️ ইউজার <code>{new_id}</code> ইতিমধ্যে এডমিন তালিকায় আছে!",
-                    reply_markup=get_main_keyboard(),
+                    reply_markup=get_persistent_keyboard(),
                     parse_mode="HTML"
                 )
                 return
@@ -891,6 +928,86 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "বাতিল করতে 'cancel' লিখুন।",
                 parse_mode="HTML"
             )
+        return
+
+    # Permanent Reply Keyboard Taps
+    if "কপি নাম্বার" in text or "সংগৃহীত নাম্বার" in text or text in ["/numbers", "/copy"]:
+        text_menu, keyboard = render_country_selection_menu()
+        await update.message.reply_text(text_menu, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if "Check Now" in text or text == "/check_now":
+        status_msg = await update.message.reply_text("🔄 নতুন SMS চেক করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
+        new_found = await process_sms_check(context.application)
+        await status_msg.edit_text(
+            f"✅ চেক সম্পন্ন হয়েছে!\n📬 নতুন মেসেজ পাওয়া গেছে: <b>{new_found} টি</b>",
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if "স্ট্যাটাস" in text or text.lower() == "status" or text == "/status":
+        await update.message.reply_text(
+            get_status_text(),
+            reply_markup=get_main_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if "Stop Monitor" in text or text == "/stop_monitor":
+        config["is_running"] = False
+        save_config(config)
+        await update.message.reply_text(
+            "🔴 মনিটরিং <b>বন্ধ</b> করা হয়েছে!",
+            reply_markup=get_persistent_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if "Start Monitor" in text or text == "/start_monitor":
+        config["is_running"] = True
+        save_config(config)
+        await update.message.reply_text(
+            "🟢 মনিটরিং <b>চালু</b> করা হয়েছে!",
+            reply_markup=get_persistent_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    if "রিফ্রেশ" in text or "ইন্টারভাল" in text or text == "/interval":
+        keyboard = [
+            [
+                InlineKeyboardButton("⚡ Instant (0.2s)", callback_data="set_int_0.2"),
+                InlineKeyboardButton("⚡ 0.5 সেকেন্ড", callback_data="set_int_0.5"),
+                InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1")
+            ],
+            [
+                InlineKeyboardButton("⏱ 2 সেকেন্ড", callback_data="set_int_2"),
+                InlineKeyboardButton("⏱ 3 সেকেন্ড", callback_data="set_int_3"),
+                InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5")
+            ],
+            [
+                InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+            ]
+        ]
+        curr_int = config.get("interval", 0.2)
+        await update.message.reply_text(
+            f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
+            f"বর্তমান নির্ধারণ: <code>{curr_int} সেকেন্ড</code>\n\n"
+            f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন (যেমন: <code>/interval 0.2</code>)।</i>",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="HTML"
+        )
+        return
+
+    if "কিওয়ার্ড" in text or text == "/keywords":
+        await keywords_command(update, context)
+        return
+
+    if "এডমিন" in text or text == "/admins":
+        text_menu, keyboard = render_admins_menu()
+        await update.message.reply_text(text_menu, reply_markup=keyboard, parse_mode="HTML")
+        return
 
 # --- Callback Query Handler (Button clicks) ---
 
@@ -1068,7 +1185,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_answer(query, "✅ ফাইল পাঠানো হয়েছে ও নাম্বার ডিলিট হয়েছে!", show_alert=True)
             except Exception as e:
                 logger.error(f"Error sending document: {e}")
-                await safe_answer(query, "❌ ফাইল পাঠাতে সমস্যা হয়েছে!", show_alert=True)
+                await safe_answer(query, "❌ ফাইল পাঠানো ব্যর্থ হয়েছে!", show_alert=True)
 
             text, keyboard = render_country_selection_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
@@ -1135,31 +1252,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_answer(query)
             keyboard = [
                 [
-                    InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1"),
-                    InlineKeyboardButton("⚡ 2 সেকেন্ড", callback_data="set_int_2"),
-                    InlineKeyboardButton("⚡ 3 সেকেন্ড", callback_data="set_int_3")
+                    InlineKeyboardButton("⚡ Instant (0.2s)", callback_data="set_int_0.2"),
+                    InlineKeyboardButton("⚡ 0.5 সেকেন্ড", callback_data="set_int_0.5"),
+                    InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1")
                 ],
                 [
-                    InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5"),
-                    InlineKeyboardButton("⏱ 10 সেকেন্ড", callback_data="set_int_10"),
-                    InlineKeyboardButton("⏱ 30 সেকেন্ড", callback_data="set_int_30")
+                    InlineKeyboardButton("⏱ 2 সেকেন্ড", callback_data="set_int_2"),
+                    InlineKeyboardButton("⏱ 3 সেকেন্ড", callback_data="set_int_3"),
+                    InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5")
                 ],
                 [
                     InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
                 ]
             ]
+            curr_int = config.get("interval", 0.2)
             await safe_edit_message(
                 query,
                 f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
-                f"বর্তমান নির্ধারণ: <code>{config['interval']} সেকেন্ড</code>\n\n"
-                f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন।</i>",
+                f"বর্তমান নির্ধারণ: <code>{curr_int} সেকেন্ড</code>\n\n"
+                f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন (যেমন: <code>/interval 0.2</code>)।</i>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
 
         elif data.startswith("set_int_"):
             await safe_answer(query)
-            new_int = int(data.split("_")[-1])
+            val_str = data.split("_")[-1]
+            try:
+                new_int = float(val_str)
+            except ValueError:
+                new_int = 0.2
             config["interval"] = new_int
             save_config(config)
             await safe_edit_message(
@@ -1199,71 +1321,79 @@ async def process_sms_check(app):
         group_id = config.get("group_id")
         new_sent_count = 0
 
-        search_list = keywords if keywords else [""]
+        # Optimization: Fetch once per polling cycle
+        search_query = keywords[0] if len(keywords) == 1 else ""
 
-        for kw in search_list:
-            try:
-                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=30)
-                if not records:
-                    continue
+        try:
+            records = await asyncio.to_thread(scraper.fetch_records, keyword=search_query, display_length=12)
+            if not records:
+                return 0
 
-                # Sort strictly chronological (oldest first, newest last) so messages never go backwards:
-                records.sort(key=lambda r: str(r.get("time", "")))
+            # Sort strictly chronological (oldest first, newest last) so messages never go backwards:
+            records.sort(key=lambda r: str(r.get("time", "")))
 
-                for rec in records:
-                    # Skip records from before bot startup/update:
-                    rec_time_str = rec.get("time", "").strip()
-                    if rec_time_str:
-                        try:
-                            rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                            server_offset = getattr(scraper, "server_clock_offset", 41.5)
-                            startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
-                            if rec_dt < startup_limit:
-                                dedup_key = make_dedup_key(rec)
-                                seen_set.add(dedup_key)
-                                continue
-                        except Exception:
-                            pass
-
-                    if kw:
-                        kw_lower = kw.lower().strip()
-                        msg_lower = rec.get("message", "").lower()
-                        cli_lower = rec.get("cli", "").lower()
-                        num_lower = rec.get("number", "").lower()
-                        if kw_lower not in msg_lower and kw_lower not in cli_lower and kw_lower not in num_lower:
+            for rec in records:
+                # Skip records from before bot startup/update:
+                rec_time_str = rec.get("time", "").strip()
+                if rec_time_str:
+                    try:
+                        rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        server_offset = getattr(scraper, "server_clock_offset", 41.5)
+                        startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
+                        if rec_dt < startup_limit:
+                            dedup_key = make_dedup_key(rec)
+                            seen_set.add(dedup_key)
                             continue
+                    except Exception:
+                        pass
 
-                    dedup_key = make_dedup_key(rec)
-                    if dedup_key not in seen_set:
-                        # Mark as seen IMMEDIATELY before dispatch to prevent duplicate sends
-                        seen_set.add(dedup_key)
-                        config["seen_hashes"].append(dedup_key)
-                        config["total_sent"] += 1
-                        new_sent_count += 1
+                # If multiple keywords, verify match in memory:
+                if keywords:
+                    msg_lower = rec.get("message", "").lower()
+                    cli_lower = rec.get("cli", "").lower()
+                    num_lower = rec.get("number", "").lower()
+                    matched_kw = None
+                    for k in keywords:
+                        k_low = k.lower().strip()
+                        if k_low in msg_lower or k_low in cli_lower or k_low in num_lower:
+                            matched_kw = k
+                            break
+                    if not matched_kw:
+                        continue
+                else:
+                    matched_kw = ""
 
-                        # Collect number ONLY if it has never been copied/consumed before:
-                        raw_num = str(rec.get("number", "")).strip()
-                        clean_num = re.sub(r'[^0-9]', '', raw_num)
-                        if clean_num:
-                            consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-                            collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
-                            if clean_num not in consumed_set and clean_num not in collected_set:
-                                config["collected_numbers"].append(clean_num)
+                dedup_key = make_dedup_key(rec)
+                if dedup_key not in seen_set:
+                    # Mark as seen IMMEDIATELY before dispatch to prevent duplicate sends
+                    seen_set.add(dedup_key)
+                    config["seen_hashes"].append(dedup_key)
+                    config["total_sent"] += 1
+                    new_sent_count += 1
 
-                        # Send to Telegram Group
-                        msg_text = format_sms_message(rec, keyword=kw)
-                        try:
-                            await app.bot.send_message(
-                                chat_id=group_id,
-                                text=msg_text,
-                                parse_mode="HTML"
-                            )
-                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
-                        except Exception as send_err:
-                            logger.error(f"Failed to send message to group: {send_err}")
+                    # Collect number ONLY if it has never been copied/consumed before:
+                    raw_num = str(rec.get("number", "")).strip()
+                    clean_num = re.sub(r'[^0-9]', '', raw_num)
+                    if clean_num:
+                        consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+                        collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
+                        if clean_num not in consumed_set and clean_num not in collected_set:
+                            config["collected_numbers"].append(clean_num)
 
-            except Exception as e:
-                logger.error(f"Error checking records for keyword '{kw}': {e}")
+                    # Send to Telegram Group INSTANTLY
+                    msg_text = format_sms_message(rec, keyword=matched_kw)
+                    try:
+                        await app.bot.send_message(
+                            chat_id=group_id,
+                            text=msg_text,
+                            parse_mode="HTML"
+                        )
+                        logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
+                    except Exception as send_err:
+                        logger.error(f"Failed to send message to group: {send_err}")
+
+        except Exception as e:
+            logger.error(f"Error checking records: {e}")
 
         if new_sent_count > 0:
             save_config(config)
@@ -1313,7 +1443,7 @@ async def background_monitoring_loop(app):
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
 
-    # 2. Continuous real-time monitoring loop:
+    # 2. Continuous real-time monitoring loop with ultra-low latency:
     while True:
         try:
             if config.get("is_running", False):
@@ -1324,7 +1454,8 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        interval = max(1, int(config.get("interval", 1)))
+        # Ultra-low latency sleep (default 0.2s)
+        interval = max(0.2, float(config.get("interval", 0.2)))
         await asyncio.sleep(interval)
 
 async def handle_health_check(request):
@@ -1339,6 +1470,7 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
+        "interval": config.get("interval", 0.2),
         "collected_numbers_count": len(active_nums),
         "consumed_numbers_count": len(config.get("consumed_numbers", []))
     })
@@ -1388,7 +1520,7 @@ def main():
     # Register Callback Query Handler for buttons
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Register Text message handler (for interactive admin ID input)
+    # Register Text message handler (for interactive admin ID input & permanent bottom buttons)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
 
     logger.info("Starting Telegram Bot with polling...")
