@@ -143,11 +143,11 @@ class FlexSMSClient:
 
         # Check if date rolled over (midnight UTC)
         if self.current_date != now_date_str:
-            logger.info(f"Date rolled over from {self.current_date} to {now_date_str}. Updating endpoint dates...")
+            logger.info(f"Date rolled over from {self.current_date} to {now_date_str}. Performing fresh login for new date...")
             self.current_date = now_date_str
-            if self.ajax_url:
-                self.ajax_url = re.sub(r'fdate1=\d{4}-\d{2}-\d{2}', f'fdate1={now_date_str}', self.ajax_url)
-                self.ajax_url = re.sub(r'fdate2=\d{4}-\d{2}-\d{2}', f'fdate2={now_date_str}', self.ajax_url)
+            self.is_logged_in = False
+            if not self.login():
+                return None
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',

@@ -35,6 +35,8 @@ logger = logging.getLogger("SMSMonitorBot")
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 SUPER_ADMIN_ID = 5597944494
 BOT_STARTUP_TIME = datetime.now(timezone.utc)
+sync_lock = threading.Lock()
+COUNTRY_CACHE = {}
 
 def load_config():
     default_config = {
@@ -100,7 +102,7 @@ def fetch_cloud_store():
             if SUPER_ADMIN_ID not in config["admins"]:
                 config["admins"].append(SUPER_ADMIN_ID)
 
-            # 2. Restore Consumed Numbers (Blacklist)
+            # 2. Restore Consumed Numbers (Permanent Blacklist)
             cloud_consumed = data.get("consumed_numbers", [])
             if "consumed_numbers" not in config:
                 config["consumed_numbers"] = []
@@ -133,7 +135,7 @@ def fetch_cloud_store():
                 if h not in config["seen_hashes"]:
                     config["seen_hashes"].append(h)
 
-            logger.info(f"Loaded persistent cloud store from data-store branch: {len(config['admins'])} admins, {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
+            logger.info(f"Loaded persistent cloud store: {len(config['admins'])} admins, {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
             save_config(config)
     except Exception as e:
         logger.error(f"Error fetching from cloud store: {e}")
@@ -143,46 +145,47 @@ def sync_cloud_store():
     repo = config.get("github_repo")
     if not token or not repo:
         return
-    try:
-        url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json?ref=data-store"
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        consumed_list = list(set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []) if str(n).strip()))
-        consumed_set = set(consumed_list)
-        collected_list = [
-            re.sub(r'[^0-9]', '', str(n))
-            for n in config.get("collected_numbers", [])
-            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-        ]
+    with sync_lock:
+        try:
+            url = f"https://api.github.com/repos/{repo}/contents/consumed_store.json?ref=data-store"
+            headers = {
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            consumed_list = list(set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []) if str(n).strip()))
+            consumed_set = set(consumed_list)
+            collected_list = [
+                re.sub(r'[^0-9]', '', str(n))
+                for n in config.get("collected_numbers", [])
+                if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+            ]
 
-        store_data = {
-            "admins": [int(a) for a in config.get("admins", [SUPER_ADMIN_ID])],
-            "consumed_numbers": consumed_list,
-            "collected_numbers": collected_list,
-            "seen_hashes": list(config.get("seen_hashes", []))[-1000:],
-            "last_updated": datetime.now(timezone.utc).isoformat()
-        }
-        raw_bytes = json.dumps(store_data, indent=2).encode("utf-8")
-        content_b64 = base64.b64encode(raw_bytes).decode("ascii")
+            store_data = {
+                "admins": [int(a) for a in config.get("admins", [SUPER_ADMIN_ID])],
+                "consumed_numbers": consumed_list,
+                "collected_numbers": collected_list,
+                "seen_hashes": list(config.get("seen_hashes", []))[-1000:],
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+            raw_bytes = json.dumps(store_data, indent=2).encode("utf-8")
+            content_b64 = base64.b64encode(raw_bytes).decode("ascii")
 
-        res = requests.get(url, headers=headers, timeout=10)
-        payload = {
-            "message": "Sync cloud store (data-store branch)",
-            "content": content_b64,
-            "branch": "data-store"
-        }
-        if res.status_code == 200:
-            payload["sha"] = res.json().get("sha")
+            res = requests.get(url, headers=headers, timeout=10)
+            payload = {
+                "message": "Sync cloud store (data-store branch)",
+                "content": content_b64,
+                "branch": "data-store"
+            }
+            if res.status_code == 200:
+                payload["sha"] = res.json().get("sha")
 
-        put_res = requests.put(f"https://api.github.com/repos/{repo}/contents/consumed_store.json", headers=headers, json=payload, timeout=10)
-        if put_res.status_code in [200, 201]:
-            logger.info("Successfully synced admins/consumed/collected/seen to data-store branch.")
-        else:
-            logger.warning(f"Failed to sync data-store branch: {put_res.status_code}")
-    except Exception as e:
-        logger.error(f"Exception during cloud store sync: {e}")
+            put_res = requests.put(f"https://api.github.com/repos/{repo}/contents/consumed_store.json", headers=headers, json=payload, timeout=10)
+            if put_res.status_code in [200, 201]:
+                logger.info("Successfully synced admins/consumed/collected/seen to data-store branch.")
+            else:
+                logger.warning(f"Failed to sync data-store branch: {put_res.status_code}")
+        except Exception as e:
+            logger.error(f"Exception during cloud store sync: {e}")
 
 def save_config(config):
     try:
@@ -218,10 +221,13 @@ async def check_auth(update: Update) -> bool:
     user_id = user.id if user else None
     if not is_admin(user_id):
         if update.callback_query:
-            await update.callback_query.answer(
-                "⛔ Unauthorized! আপনার এই বট ব্যবহারের অনুমতি নেই।",
-                show_alert=True
-            )
+            try:
+                await update.callback_query.answer(
+                    "⛔ Unauthorized! আপনার এই বট ব্যবহারের অনুমতি নেই।",
+                    show_alert=True
+                )
+            except Exception:
+                pass
         elif update.message:
             await update.message.reply_text(
                 f"⛔ <b>Access Denied! (অননুমোদিত অ্যাক্সেস)</b>\n"
@@ -235,7 +241,12 @@ async def check_auth(update: Update) -> bool:
     return True
 
 def get_country_info(phone_str):
-    clean = str(phone_str).lstrip("+").strip()
+    clean = re.sub(r'[^0-9]', '', str(phone_str))
+    if not clean:
+        return "Other Countries", "XX", "🌐", 0
+    pfx = clean[:4]
+    if pfx in COUNTRY_CACHE:
+        return COUNTRY_CACHE[pfx]
     try:
         p = phonenumbers.parse("+" + clean)
         country_name = geocoder.country_name_for_number(p, "en")
@@ -245,13 +256,21 @@ def get_country_info(phone_str):
         if not iso:
             iso = "XX"
         flag = "".join(chr(127397 + ord(c)) for c in iso.upper()) if len(iso) == 2 and iso != "XX" else "🌐"
-        return country_name, iso, flag, p.country_code
+        res = (country_name, iso, flag, p.country_code)
+        COUNTRY_CACHE[pfx] = res
+        return res
     except Exception:
-        return "Other Countries", "XX", "🌐", 0
+        res = ("Other Countries", "XX", "🌐", 0)
+        COUNTRY_CACHE[pfx] = res
+        return res
 
 def group_numbers_by_country():
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-    nums = [re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []) if re.sub(r'[^0-9]', '', str(n)) not in consumed_set]
+    nums = [
+        re.sub(r'[^0-9]', '', str(n))
+        for n in config.get("collected_numbers", [])
+        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+    ]
     groups = {}
     for n in nums:
         c_name, iso, flag, code = get_country_info(n)
@@ -266,14 +285,23 @@ def group_numbers_by_country():
 
 def render_country_selection_menu():
     groups = group_numbers_by_country()
-    total = len(config.get("collected_numbers", []))
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    active_nums = [
+        re.sub(r'[^0-9]', '', str(n))
+        for n in config.get("collected_numbers", [])
+        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+    ]
+    total = len(active_nums)
     
     if total == 0:
         text = (
             "📱 <b>বর্তমানে কোনো নতুন নাম্বার সংরক্ষিত নেই।</b>\n\n"
             "নতুন SMS আসামাত্র নতুন নাম্বার স্বয়ংক্রিয়ভাবে এখানে দেশভিত্তিক যুক্ত হবে।"
         )
-        keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
+        keyboard = [
+            [InlineKeyboardButton("🔄 রিফ্রেশ (Refresh)", callback_data="refresh_numbers")],
+            [InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]
+        ]
         return text, InlineKeyboardMarkup(keyboard)
 
     text = (
@@ -305,8 +333,14 @@ def render_country_selection_menu():
 
 def render_country_numbers_view(iso):
     groups = group_numbers_by_country()
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    
     if iso == "ALL":
-        target_numbers = config.get("collected_numbers", [])
+        target_numbers = [
+            re.sub(r'[^0-9]', '', str(n))
+            for n in config.get("collected_numbers", [])
+            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+        ]
         title = "🌐 সব দেশের নাম্বার"
     else:
         info = groups.get(iso)
@@ -319,16 +353,16 @@ def render_country_numbers_view(iso):
     if count == 0:
         return render_country_selection_menu()
 
-    subset = target_numbers[-100:]
+    subset = target_numbers[-80:]
     num_list_text = "\n".join([f"+{n}" for n in reversed(subset)])
-    extra_note = f"\n<i>(সর্বশেষ {len(subset)} টি দেখানো হচ্ছে)</i>" if count > 100 else ""
+    extra_note = f"\n<i>(সর্বশেষ {len(subset)} টি দেখানো হচ্ছে, সবগুলো পেতে ডাউনলোড করুন)</i>" if count > 80 else ""
 
     text = (
         f"📱 <b>{title} (মোট {count} টি):</b>\n"
-        f"<i>(নিচের বক্সে ট্যাপ করলেই সবগুলো নাম্বার একসাথে কপি হয়ে যাবে)</i>\n\n"
+        f"<i>(নিচের বক্সে ট্যাপ করলেই নাম্বারগুলো একসাথে কপি হয়ে যাবে)</i>\n\n"
         f"<pre>{num_list_text}</pre>{extra_note}\n\n"
         f"⚠️ <b>কপি বা ডাউনলোড করার পর:</b>\n"
-        f"নিচের <b>'✅ কপি করেছি (ডিলিট)'</b> বাটনে চাপুন। এতে এই {count}টি নাম্বার তালিকা থেকে মুছে যাবে এবং ভবিষ্যতে এই নাম্বারে কোড আসলে তা আর সংগ্রহ হবে না।"
+        f"নিচের <b>'✅ কপি করেছি (ডিলিট)'</b> বাটনে চাপুন। এতে এই {count}টি নাম্বার তালিকা থেকে মুছে যাবে এবং ভবিষ্যতে এই নাম্বারে কোড আসলেও তা আর সংরক্ষিত হবে না।"
     )
 
     keyboard = [
@@ -345,8 +379,14 @@ def render_country_numbers_view(iso):
 
 def consume_numbers_for_country(iso):
     groups = group_numbers_by_country()
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    
     if iso == "ALL":
-        to_consume = list(config.get("collected_numbers", []))
+        to_consume = [
+            re.sub(r'[^0-9]', '', str(n))
+            for n in config.get("collected_numbers", [])
+            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+        ]
     else:
         to_consume = list(groups.get(iso, {}).get("numbers", []))
     
@@ -356,7 +396,6 @@ def consume_numbers_for_country(iso):
     if "consumed_numbers" not in config:
         config["consumed_numbers"] = []
     
-    consumed_set = set(config["consumed_numbers"])
     for n in to_consume:
         clean = re.sub(r'[^0-9]', '', str(n))
         if clean and clean not in consumed_set:
@@ -418,50 +457,36 @@ def make_dedup_key(record):
         msg_hash = hashlib.md5(clean_msg.encode("utf-8", errors="ignore")).hexdigest()[:12]
         return f"{clean_num}_MSG_{msg_hash}"
 
-def calculate_latency(panel_time_str):
-    try:
-        raw_str = panel_time_str.strip()
-        if raw_str.endswith("00:00:00"):
-            return "N/A"
-        
-        panel_dt = datetime.strptime(raw_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-        now_utc = datetime.now(timezone.utc)
-        
-        server_clock_offset = getattr(scraper, "server_clock_offset", 41.5)
-        server_now = now_utc - timedelta(seconds=server_clock_offset)
-        
-        diff_seconds = max(0, int((server_now - panel_dt).total_seconds()))
-
-        if diff_seconds <= 2:
-            return "1s (Instant ⚡)"
-        elif diff_seconds < 60:
-            return f"{diff_seconds}s"
-        elif diff_seconds < 3600:
-            mins = diff_seconds // 60
-            secs = diff_seconds % 60
-            return f"{mins}m {secs}s"
-        else:
-            hours = diff_seconds // 3600
-            mins = (diff_seconds % 3600) // 60
-            return f"{hours}h {mins}m"
-    except Exception:
-        return "N/A"
-
 def format_sms_message(rec, keyword=""):
     raw_panel = rec.get("time", "").strip()
+    now_utc = datetime.now(timezone.utc)
+    now_bd = now_utc + timedelta(hours=6)
+    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+    
     panel_display = raw_panel
+    diff_seconds = 0
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
             panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
         except Exception:
             panel_display = raw_panel
 
-    now_bd = datetime.now(timezone.utc) + timedelta(hours=6)
-    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-    
-    latency_str = calculate_latency(rec.get("time", ""))
+    if diff_seconds <= 2:
+        latency_str = f"{diff_seconds}s (Instant ⚡)"
+    elif diff_seconds < 60:
+        latency_str = f"{diff_seconds}s"
+    elif diff_seconds < 3600:
+        mins = diff_seconds // 60
+        secs = diff_seconds % 60
+        latency_str = f"{mins}m {secs}s"
+    else:
+        hours = diff_seconds // 3600
+        mins = (diff_seconds % 3600) // 60
+        latency_str = f"{hours}h {mins}m"
+        
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
     msg = html.escape(rec.get("message", ""))
@@ -519,7 +544,13 @@ def get_main_keyboard():
 def get_status_text():
     state_str = "🟢 Running (সক্রিয়)" if config["is_running"] else "🔴 Stopped (বন্ধ)"
     kw_str = ", ".join(config["keywords"]) if config["keywords"] else "(কোন কিওয়ার্ড নেই - সব আসবে)"
-    total_active_nums = len(config.get("collected_numbers", []))
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    active_nums = [
+        re.sub(r'[^0-9]', '', str(n))
+        for n in config.get("collected_numbers", [])
+        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+    ]
+    total_active_nums = len(active_nums)
     total_consumed = len(config.get("consumed_numbers", []))
     total_admins = len(config.get("admins", [SUPER_ADMIN_ID]))
     return (
@@ -562,6 +593,24 @@ def render_admins_menu():
         ]
     ]
     return text, InlineKeyboardMarkup(keyboard)
+
+# --- Safe Helpers for Callbacks ---
+
+async def safe_answer(query, text=None, show_alert=False):
+    try:
+        if text:
+            await query.answer(text=text, show_alert=show_alert)
+        else:
+            await query.answer()
+    except Exception:
+        pass
+
+async def safe_edit_message(query, text, reply_markup=None, parse_mode="HTML"):
+    try:
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception as e:
+        if "Message is not modified" not in str(e):
+            logger.error(f"Error editing message: {e}")
 
 # --- Command Handlers ---
 
@@ -846,261 +895,299 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # --- Callback Query Handler (Button clicks) ---
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update):
-        return
-
     query = update.callback_query
-    await query.answer()
-    data = query.data
+    try:
+        if not await check_auth(update):
+            return
 
-    if data == "toggle_monitor":
-        config["is_running"] = not config["is_running"]
-        save_config(config)
-        await query.edit_message_text(
-            get_status_text(),
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
+        data = query.data
 
-    elif data == "show_status":
-        await query.edit_message_text(
-            get_status_text(),
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
+        if data == "toggle_monitor":
+            await safe_answer(query)
+            config["is_running"] = not config["is_running"]
+            save_config(config)
+            await safe_edit_message(
+                query,
+                get_status_text(),
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
 
-    elif data == "main_menu":
-        context.user_data["awaiting"] = None
-        await query.edit_message_text(
-            get_status_text(),
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
+        elif data == "show_status":
+            await safe_answer(query)
+            await safe_edit_message(
+                query,
+                get_status_text(),
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
 
-    elif data == "menu_admins":
-        text, keyboard = render_admins_menu()
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        elif data == "main_menu":
+            await safe_answer(query)
+            context.user_data["awaiting"] = None
+            await safe_edit_message(
+                query,
+                get_status_text(),
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
 
-    elif data == "prompt_add_admin":
-        context.user_data["awaiting"] = "add_admin"
-        keyboard = [[InlineKeyboardButton("🔙 বাতিল করুন (Cancel)", callback_data="menu_admins")]]
-        await query.edit_message_text(
-            "➕ <b>নতুন এডমিন যোগ করুন:</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "দয়া করে যাকে এডমিন করতে চান তার <b>Telegram User ID</b> লিখে এই চ্যাটে মেসেজ পাঠান।\n\n"
-            "<i>(অথবা কমান্ড ব্যবহার করতে পারেন: <code>/add_admin &lt;User_ID&gt;</code>)</i>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        elif data == "menu_admins":
+            await safe_answer(query)
+            text, keyboard = render_admins_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data == "menu_del_admin":
-        admins = config.get("admins", [SUPER_ADMIN_ID])
-        removable = [a for a in admins if int(a) != SUPER_ADMIN_ID]
-        
-        if not removable:
-            keyboard = [[InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_admins")]]
-            await query.edit_message_text(
-                "ℹ️ রিমুভ করার মতো কোনো সাব-এডমিন নেই। মূল সুপার এডমিনকে মোছা যাবে না।",
+        elif data == "prompt_add_admin":
+            await safe_answer(query)
+            context.user_data["awaiting"] = "add_admin"
+            keyboard = [[InlineKeyboardButton("🔙 বাতিল করুন (Cancel)", callback_data="menu_admins")]]
+            await safe_edit_message(
+                query,
+                "➕ <b>নতুন এডমিন যোগ করুন:</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "দয়া করে যাকে এডমিন করতে চান তার <b>Telegram User ID</b> লিখে এই চ্যাটে মেসেজ পাঠান।\n\n"
+                "<i>(অথবা কমান্ড ব্যবহার করতে পারেন: <code>/add_admin &lt;User_ID&gt;</code>)</i>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
-            return
 
-        keyboard = []
-        for a in removable:
-            keyboard.append([
-                InlineKeyboardButton(f"❌ Remove {a}", callback_data=f"del_admin_{a}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_admins")])
+        elif data == "menu_del_admin":
+            await safe_answer(query)
+            admins = config.get("admins", [SUPER_ADMIN_ID])
+            removable = [a for a in admins if int(a) != SUPER_ADMIN_ID]
+            
+            if not removable:
+                keyboard = [[InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_admins")]]
+                await safe_edit_message(
+                    query,
+                    "ℹ️ রিমুভ করার মতো কোনো সাব-এডমিন নেই। মূল সুপার এডমিনকে মোছা যাবে না।",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                return
 
-        await query.edit_message_text(
-            "➖ <b>যাকে রিমুভ করতে চান নিচের বাটনে চাপুন:</b>\n\n"
-            "<i>(অথবা কমান্ড দিন: <code>/del_admin &lt;User_ID&gt;</code>)</i>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+            keyboard = []
+            for a in removable:
+                keyboard.append([
+                    InlineKeyboardButton(f"❌ Remove {a}", callback_data=f"del_admin_{a}")
+                ])
+            keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_admins")])
 
-    elif data.startswith("del_admin_"):
-        target_id = int(data[len("del_admin_"):])
-        if target_id == SUPER_ADMIN_ID:
-            await query.answer("মূল সুপার এডমিনকে রিমুভ করা যাবে না!", show_alert=True)
-            return
-        if target_id in config["admins"]:
-            config["admins"].remove(target_id)
-            save_config(config)
-            try:
-                threading.Thread(target=sync_cloud_store, daemon=True).start()
-            except Exception:
-                pass
-            await query.answer(f"এডমিন {target_id} রিমুভ হয়েছে!")
-        
-        text, keyboard = render_admins_menu()
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-    elif data == "menu_numbers":
-        text, keyboard = render_country_selection_menu()
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-    elif data == "refresh_numbers":
-        text, keyboard = render_country_selection_menu()
-        try:
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-            await query.answer("🔄 দেশভিত্তিক নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
-        except Exception:
-            await query.answer("ইতিমধ্যেই লেটেস্ট তালিকায় আছেন!")
-
-    elif data.startswith("view_c_"):
-        iso = data[len("view_c_"):]
-        text, keyboard = render_country_numbers_view(iso)
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-
-    elif data.startswith("refresh_view_c_"):
-        iso = data[len("refresh_view_c_"):]
-        text, keyboard = render_country_numbers_view(iso)
-        try:
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-            await query.answer("🔄 এই দেশের নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
-        except Exception:
-            await query.answer("ইতিমধ্যেই লেটেস্ট তালিকায় আছেন!")
-
-    elif data.startswith("consume_c_"):
-        iso = data[len("consume_c_"):]
-        count, consumed_list = consume_numbers_for_country(iso)
-        if count > 0:
-            await query.answer(
-                f"✅ {count}টি নাম্বার সংগ্রহ তালিকা থেকে ডিলিট হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না!",
-                show_alert=True
+            await safe_edit_message(
+                query,
+                "➖ <b>যাকে রিমুভ করতে চান নিচের বাটনে চাপুন:</b>\n\n"
+                "<i>(অথবা কমান্ড দিন: <code>/del_admin &lt;User_ID&gt;</code>)</i>",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
             )
-        else:
-            await query.answer("কোনো সক্রিয় নাম্বার পাওয়া যায়নি!", show_alert=True)
-        text, keyboard = render_country_selection_menu()
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data.startswith("down_consume_c_"):
-        iso = data[len("down_consume_c_"):]
-        groups = group_numbers_by_country()
-        country_title = groups.get(iso, {}).get("country", iso) if iso != "ALL" else "All_Countries"
-        
-        count, consumed_list = consume_numbers_for_country(iso)
-        if count == 0:
-            await query.answer("কোনো নাম্বার পাওয়া যায়নি!", show_alert=True)
+        elif data.startswith("del_admin_"):
+            target_id = int(data[len("del_admin_"):])
+            if target_id == SUPER_ADMIN_ID:
+                await safe_answer(query, "মূল সুপার এডমিনকে রিমুভ করা যাবে না!", show_alert=True)
+                return
+            if target_id in config["admins"]:
+                config["admins"].remove(target_id)
+                save_config(config)
+                try:
+                    threading.Thread(target=sync_cloud_store, daemon=True).start()
+                except Exception:
+                    pass
+                await safe_answer(query, f"এডমিন {target_id} রিমুভ হয়েছে!")
+            else:
+                await safe_answer(query)
+            
+            text, keyboard = render_admins_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data == "menu_numbers":
+            await safe_answer(query)
             text, keyboard = render_country_selection_menu()
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
-            return
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
-        content = "\n".join([f"+{n}" for n in consumed_list])
-        file_obj = io.BytesIO(content.encode("utf-8"))
-        filename = f"{country_title}_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        file_obj.name = filename
+        elif data == "refresh_numbers":
+            text, keyboard = render_country_selection_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+            await safe_answer(query, "🔄 দেশভিত্তিক নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
 
-        await context.bot.send_document(
-            chat_id=query.message.chat_id,
-            document=file_obj,
-            filename=filename,
-            caption=(
-                f"📋 <b>{country_title}</b>-এর মোট {count}টি নাম্বারের ফাইল।\n"
-                f"<i>এই নাম্বারগুলো সংগ্রহ তালিকা থেকে মুছে দেওয়া হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না।</i>"
-            ),
-            parse_mode="HTML"
-        )
-        await query.answer("✅ ফাইল পাঠানো হয়েছে ও নাম্বার ডিলিট হয়েছে!", show_alert=True)
-        text, keyboard = render_country_selection_menu()
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        elif data.startswith("view_c_"):
+            await safe_answer(query)
+            iso = data[len("view_c_"):]
+            text, keyboard = render_country_numbers_view(iso)
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
-    elif data == "list_keywords":
-        if not config["keywords"]:
-            keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
-            await query.edit_message_text(
-                "🔍 বর্তমানে কোনো কিওয়ার্ড সেট করা নেই।\nনতুন কিওয়ার্ড যোগ করতে চ্যাটে লিখুন:\n<code>/add &lt;keyword&gt;</code>",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-            return
+        elif data.startswith("refresh_view_c_"):
+            iso = data[len("refresh_view_c_"):]
+            text, keyboard = render_country_numbers_view(iso)
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+            await safe_answer(query, "🔄 এই দেশের নাম্বার তালিকা রিফ্রেশ করা হয়েছে!")
 
-        keyboard = []
-        for kw in config["keywords"]:
-            keyboard.append([
-                InlineKeyboardButton(f"❌ Remove '{kw}'", callback_data=f"del_kw_{kw}")
-            ])
-        keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
+        elif data.startswith("consume_c_"):
+            iso = data[len("consume_c_"):]
+            count, consumed_list = consume_numbers_for_country(iso)
+            if count > 0:
+                await safe_answer(
+                    query,
+                    f"✅ {count}টি নাম্বার সংগ্রহ তালিকা থেকে ডিলিট হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না!",
+                    show_alert=True
+                )
+            else:
+                await safe_answer(query, "কোনো সক্রিয় নাম্বার পাওয়া যায়নি!", show_alert=True)
+            text, keyboard = render_country_selection_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
-        await query.edit_message_text(
-            f"🔍 <b>বর্তমান সক্রিয় কিওয়ার্ড তালিকা:</b>\n"
-            f"• " + "\n• ".join([f"<code>{k}</code>" for k in config["keywords"]]) + "\n\n"
-            f"<i>মুছে ফেলতে নিচের বাটন চাপুন অথবা <code>/add &lt;keyword&gt;</code> দিয়ে নতুন যোগ করুন:</i>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        elif data.startswith("down_consume_c_"):
+            iso = data[len("down_consume_c_"):]
+            groups = group_numbers_by_country()
+            country_title = groups.get(iso, {}).get("country", iso) if iso != "ALL" else "All_Countries"
+            
+            count, consumed_list = consume_numbers_for_country(iso)
+            if count == 0:
+                await safe_answer(query, "কোনো নাম্বার পাওয়া যায়নি!", show_alert=True)
+                text, keyboard = render_country_selection_menu()
+                await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+                return
 
-    elif data.startswith("del_kw_"):
-        kw_to_del = data[len("del_kw_"):]
-        if kw_to_del in config["keywords"]:
-            config["keywords"].remove(kw_to_del)
-            save_config(config)
-        if not config["keywords"]:
-            keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
-            await query.edit_message_text(
-                f"🗑 কিওয়ার্ড <b>{kw_to_del}</b> মুছে ফেলা হয়েছে!\nএখন কোনো কিওয়ার্ড নেই।",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-        else:
+            content = "\n".join([f"+{n}" for n in consumed_list])
+            file_obj = io.BytesIO(content.encode("utf-8"))
+            safe_country_name = re.sub(r'[^a-zA-Z0-9_]', '_', country_title)
+            filename = f"{safe_country_name}_numbers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            file_obj.name = filename
+
+            try:
+                await context.bot.send_document(
+                    chat_id=query.message.chat_id,
+                    document=file_obj,
+                    filename=filename,
+                    caption=(
+                        f"📋 <b>{country_title}</b>-এর মোট {count}টি নাম্বারের ফাইল।\n"
+                        f"<i>এই নাম্বারগুলো সংগ্রহ তালিকা থেকে মুছে দেওয়া হয়েছে এবং ভবিষ্যতে আর সংগ্রহ করা হবে না।</i>"
+                    ),
+                    parse_mode="HTML"
+                )
+                await safe_answer(query, "✅ ফাইল পাঠানো হয়েছে ও নাম্বার ডিলিট হয়েছে!", show_alert=True)
+            except Exception as e:
+                logger.error(f"Error sending document: {e}")
+                await safe_answer(query, "❌ ফাইল পাঠাতে সমস্যা হয়েছে!", show_alert=True)
+
+            text, keyboard = render_country_selection_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data == "list_keywords":
+            await safe_answer(query)
+            if not config["keywords"]:
+                keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
+                await safe_edit_message(
+                    query,
+                    "🔍 বর্তমানে কোনো কিওয়ার্ড সেট করা নেই।\nনতুন কিওয়ার্ড যোগ করতে চ্যাটে লিখুন:\n<code>/add &lt;keyword&gt;</code>",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+                return
+
             keyboard = []
             for kw in config["keywords"]:
                 keyboard.append([
                     InlineKeyboardButton(f"❌ Remove '{kw}'", callback_data=f"del_kw_{kw}")
                 ])
             keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
-            await query.edit_message_text(
-                f"🗑 <b>{kw_to_del}</b> মুছে ফেলা হয়েছে!\n\n"
+
+            await safe_edit_message(
+                query,
                 f"🔍 <b>বর্তমান সক্রিয় কিওয়ার্ড তালিকা:</b>\n"
-                f"• " + "\n• ".join([f"<code>{k}</code>" for k in config["keywords"]]),
+                f"• " + "\n• ".join([f"<code>{k}</code>" for k in config["keywords"]]) + "\n\n"
+                f"<i>মুছে ফেলতে নিচের বাটন চাপুন অথবা <code>/add &lt;keyword&gt;</code> দিয়ে নতুন যোগ করুন:</i>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
 
-    elif data == "menu_interval":
-        keyboard = [
-            [
-                InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1"),
-                InlineKeyboardButton("⚡ 2 সেকেন্ড", callback_data="set_int_2"),
-                InlineKeyboardButton("⚡ 3 সেকেন্ড", callback_data="set_int_3")
-            ],
-            [
-                InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5"),
-                InlineKeyboardButton("⏱ 10 সেকেন্ড", callback_data="set_int_10"),
-                InlineKeyboardButton("⏱ 30 সেকেন্ড", callback_data="set_int_30")
-            ],
-            [
-                InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+        elif data.startswith("del_kw_"):
+            await safe_answer(query)
+            kw_to_del = data[len("del_kw_"):]
+            if kw_to_del in config["keywords"]:
+                config["keywords"].remove(kw_to_del)
+                save_config(config)
+            if not config["keywords"]:
+                keyboard = [[InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")]]
+                await safe_edit_message(
+                    query,
+                    f"🗑 কিওয়ার্ড <b>{kw_to_del}</b> মুছে ফেলা হয়েছে!\nএখন কোনো কিওয়ার্ড নেই।",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+            else:
+                keyboard = []
+                for kw in config["keywords"]:
+                    keyboard.append([
+                        InlineKeyboardButton(f"❌ Remove '{kw}'", callback_data=f"del_kw_{kw}")
+                    ])
+                keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
+                await safe_edit_message(
+                    query,
+                    f"🗑 <b>{kw_to_del}</b> মুছে ফেলা হয়েছে!\n\n"
+                    f"🔍 <b>বর্তমান সক্রিয় কিওয়ার্ড তালিকা:</b>\n"
+                    f"• " + "\n• ".join([f"<code>{k}</code>" for k in config["keywords"]]),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML"
+                )
+
+        elif data == "menu_interval":
+            await safe_answer(query)
+            keyboard = [
+                [
+                    InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1"),
+                    InlineKeyboardButton("⚡ 2 সেকেন্ড", callback_data="set_int_2"),
+                    InlineKeyboardButton("⚡ 3 সেকেন্ড", callback_data="set_int_3")
+                ],
+                [
+                    InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5"),
+                    InlineKeyboardButton("⏱ 10 সেকেন্ড", callback_data="set_int_10"),
+                    InlineKeyboardButton("⏱ 30 সেকেন্ড", callback_data="set_int_30")
+                ],
+                [
+                    InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+                ]
             ]
-        ]
-        await query.edit_message_text(
-            f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
-            f"বর্তমান নির্ধারণ: <code>{config['interval']} সেকেন্ড</code>\n\n"
-            f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন।</i>",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+            await safe_edit_message(
+                query,
+                f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
+                f"বর্তমান নির্ধারণ: <code>{config['interval']} সেকেন্ড</code>\n\n"
+                f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন।</i>",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
 
-    elif data.startswith("set_int_"):
-        new_int = int(data.split("_")[-1])
-        config["interval"] = new_int
-        save_config(config)
-        await query.edit_message_text(
-            f"✅ রিফ্রেশ ইন্টারভাল পরিবর্তন করে <b>{new_int} সেকেন্ড</b> করা হয়েছে!",
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
+        elif data.startswith("set_int_"):
+            await safe_answer(query)
+            new_int = int(data.split("_")[-1])
+            config["interval"] = new_int
+            save_config(config)
+            await safe_edit_message(
+                query,
+                f"✅ রিফ্রেশ ইন্টারভাল পরিবর্তন করে <b>{new_int} সেকেন্ড</b> করা হয়েছে!",
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
 
-    elif data == "check_now":
-        new_found = await process_sms_check(context.application)
-        await query.edit_message_text(
-            f"✅ চেক সম্পন্ন হয়েছে!\n📬 নতুন মেসেজ পাওয়া গেছে: <b>{new_found} টি</b>\n\n"
-            + get_status_text(),
-            reply_markup=get_main_keyboard(),
-            parse_mode="HTML"
-        )
+        elif data == "check_now":
+            await safe_answer(query, "🔄 চেক করা হচ্ছে...")
+            new_found = await process_sms_check(context.application)
+            await safe_edit_message(
+                query,
+                f"✅ চেক সম্পন্ন হয়েছে!\n📬 নতুন মেসেজ পাওয়া গেছে: <b>{new_found} টি</b>\n\n"
+                + get_status_text(),
+                reply_markup=get_main_keyboard(),
+                parse_mode="HTML"
+            )
+        else:
+            await safe_answer(query)
+
+    except Exception as e:
+        logger.error(f"Error in button_handler: {e}", exc_info=True)
+        try:
+            await query.answer("⚠️ একটি সমস্যা দেখা দিয়েছে, অনুগ্রহ করে আবার চেষ্টা করুন।")
+        except Exception:
+            pass
 
 # --- Core Scraping & Group Dispatch Logic ---
 
@@ -1124,7 +1211,7 @@ async def process_sms_check(app):
                 records.sort(key=lambda r: str(r.get("time", "")))
 
                 for rec in records:
-                    # 1. Skip records from before bot startup/update:
+                    # Skip records from before bot startup/update:
                     rec_time_str = rec.get("time", "").strip()
                     if rec_time_str:
                         try:
@@ -1190,30 +1277,43 @@ async def process_sms_check(app):
 async def background_monitoring_loop(app):
     logger.info("Initializing background monitoring loop...")
     
-    # Pre-seed existing records on startup/update so zero previous messages are sent to group
+    # 1. Pre-seed today's records and numbers on startup:
     try:
         keywords = config.get("keywords", [])
-        search_targets = list(keywords)
-        if "" not in search_targets:
-            search_targets.append("")
+        search_targets = list(keywords) if keywords else [""]
         
-        logger.info(f"Pre-seeding existing records on startup/update for targets: {search_targets}")
+        consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+        collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
+        new_collected_count = 0
+
+        logger.info(f"Pre-seeding today's records for targets: {search_targets}")
         for target_kw in search_targets:
-            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=target_kw, display_length=100)
+            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=target_kw, display_length=500)
             if init_recs:
                 for r in init_recs:
                     k = make_dedup_key(r)
                     seen_set.add(k)
                     if k not in config["seen_hashes"]:
                         config["seen_hashes"].append(k)
-        save_config(config)
-        logger.info(f"Startup pre-seeding done. Seen hashes count: {len(seen_set)}. No old messages will be sent.")
-    except Exception as e:
-        logger.error(f"Error pre-seeding startup records: {e}")
-        logger.info(f"Startup pre-seeding done. Seen hashes count: {len(seen_set)}. No old messages will be sent.")
-    except Exception as e:
-        logger.error(f"Error pre-seeding startup records: {e}")
 
+                    # Collect number for today if not already consumed or collected:
+                    raw_num = str(r.get("number", "")).strip()
+                    clean_num = re.sub(r'[^0-9]', '', raw_num)
+                    if clean_num and clean_num not in consumed_set and clean_num not in collected_set:
+                        config["collected_numbers"].append(clean_num)
+                        collected_set.add(clean_num)
+                        new_collected_count += 1
+
+        logger.info(f"Startup seeding complete: {len(seen_set)} seen keys, {len(config['collected_numbers'])} collected numbers ({new_collected_count} newly seeded from today).")
+        save_config(config)
+        try:
+            threading.Thread(target=sync_cloud_store, daemon=True).start()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"Error during startup seeding: {e}")
+
+    # 2. Continuous real-time monitoring loop:
     while True:
         try:
             if config.get("is_running", False):
@@ -1228,12 +1328,18 @@ async def background_monitoring_loop(app):
         await asyncio.sleep(interval)
 
 async def handle_health_check(request):
+    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+    active_nums = [
+        re.sub(r'[^0-9]', '', str(n))
+        for n in config.get("collected_numbers", [])
+        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
+    ]
     return web.json_response({
         "status": "online",
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "collected_numbers_count": len(config.get("collected_numbers", [])),
+        "collected_numbers_count": len(active_nums),
         "consumed_numbers_count": len(config.get("consumed_numbers", []))
     })
 
