@@ -4,6 +4,7 @@ import logging
 import urllib.parse
 import time
 import email.utils
+import threading
 from datetime import datetime, timezone
 
 logger = logging.getLogger("FlexSMSScraper")
@@ -31,6 +32,8 @@ class FlexSMSClient:
         self.server_clock_offset = 41.5
         self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.last_login_time = 0
+        self.rate_limited_until = 0.0
+        self.last_response_time = 0.0
 
     def sync_server_clock(self, headers):
         """Calibrates clock difference between server HTTP Date header and local machine UTC."""
@@ -59,7 +62,7 @@ class FlexSMSClient:
 
     def login(self):
         """Performs full login, captcha solve, and initializes FailedSMSReports session key."""
-        logger.info("Attempting login to Flex SMS portal...")
+        logger.info(f"Attempting login to Flex SMS portal for user {self.username}...")
         login_page_url = f"{self.base_url}/login"
         signin_url = f"{self.base_url}/signin"
         
@@ -69,7 +72,8 @@ class FlexSMSClient:
                 self.sync_server_clock(r.headers)
                 
                 if r.status_code == 429:
-                    logger.warning("Status 429 received on login. Backing off 3s...")
+                    logger.warning(f"Status 429 received on login for {self.username}. Backing off 3s...")
+                    self.rate_limited_until = time.time() + 25
                     time.sleep(3)
                     continue
                 if r.status_code != 200:
@@ -83,7 +87,7 @@ class FlexSMSClient:
                     time.sleep(2)
                     continue
 
-                logger.info(f"Captcha solved: {captcha_ans}")
+                logger.info(f"Captcha solved for {self.username}: {captcha_ans}")
                 login_data = {
                     'username': self.username,
                     'password': self.password,
@@ -94,7 +98,7 @@ class FlexSMSClient:
                 self.sync_server_clock(r_post.headers)
                 
                 if "SMSDashboard" not in r_post.url and r_post.status_code != 200:
-                    logger.error(f"Login failed. Final URL: {r_post.url}")
+                    logger.error(f"Login failed for {self.username}. Final URL: {r_post.url}")
                     time.sleep(2)
                     continue
 
@@ -105,7 +109,8 @@ class FlexSMSClient:
                 self.sync_server_clock(r_rep.headers)
                 
                 if r_rep.status_code == 429:
-                    logger.warning("Status 429 on FailedSMSReports. Backing off 3s...")
+                    logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 3s...")
+                    self.rate_limited_until = time.time() + 25
                     time.sleep(3)
                     r_rep = self.session.get(reports_url, timeout=15)
                     self.sync_server_clock(r_rep.headers)
@@ -124,19 +129,20 @@ class FlexSMSClient:
 
                 self.ajax_url = f"{self.base_url}/agent/{ajax_match.group(1)}"
                 self.is_logged_in = True
+                self.rate_limited_until = 0.0
                 self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 self.last_login_time = time.time()
-                logger.info(f"Login successful! Ajax endpoint initialized for date {self.current_date}: {self.ajax_url} (Clock skew: {self.server_clock_offset:.1f}s)")
+                logger.info(f"Login successful for {self.username}! Ajax endpoint initialized for date {self.current_date}")
                 return True
 
             except Exception as e:
-                logger.error(f"Exception during login attempt {attempt+1}: {e}")
+                logger.error(f"Exception during login attempt {attempt+1} for {self.username}: {e}")
                 time.sleep(2)
 
         self.is_logged_in = False
         return False
 
-    def fetch_records(self, keyword="", display_length=25):
+    def fetch_records(self, keyword="", display_length=15):
         """
         Fetches failed SMS records.
         Strictly sorts DESCENDING so latest records are always first.
@@ -144,9 +150,14 @@ class FlexSMSClient:
         """
         now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
+        # Check rate limit cooldown
+        if self.rate_limited_until > time.time():
+            logger.info(f"User {self.username} is in rate-limit cooldown. Skipping...")
+            return None
+
         # Check if login is needed
         if not self.is_logged_in or not self.ajax_url:
-            logger.info("Initial login triggered.")
+            logger.info(f"Login triggered for user {self.username}.")
             if not self.login():
                 return None
 
@@ -179,51 +190,137 @@ class FlexSMSClient:
             'sSearch': keyword.strip() if keyword else ''
         }
 
-        for attempt in range(2):
-            try:
-                res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=15)
-                self.sync_server_clock(res.headers)
-                
-                # Check rate limit
-                if res.status_code == 429:
-                    logger.warning("Status 429 on Ajax call. Backing off 2s...")
-                    time.sleep(2)
+        try:
+            t0 = time.time()
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=12)
+            self.last_response_time = time.time() - t0
+            self.sync_server_clock(res.headers)
+            
+            # Check rate limit
+            if res.status_code == 429:
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 25s.")
+                self.rate_limited_until = time.time() + 25
+                return None
+
+            # Check for session expiration indicators
+            if res.status_code != 200 or "Direct Script Access Not Allowed" in res.text or "<!DOCTYPE html>" in res.text:
+                logger.warning(f"Session expired for {self.username}. Re-logging in...")
+                if self.login():
+                    res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=12)
+                else:
+                    return None
+            
+            data = res.json()
+            raw_rows = data.get('aaData', [])
+            valid_records = []
+
+            for row in raw_rows:
+                if len(row) < 4:
+                    continue
+                if isinstance(row[1], int) or row[1] == 0 or not str(row[1]).strip():
+                    continue
+                if not str(row[3]).strip():
                     continue
 
-                # Check for session expiration indicators
-                if res.status_code != 200 or "Direct Script Access Not Allowed" in res.text or "<!DOCTYPE html>" in res.text:
-                    logger.warning("Session expired or rejected by server. Re-logging in...")
-                    if self.login():
-                        continue
-                    else:
-                        return None
-                
-                data = res.json()
-                raw_rows = data.get('aaData', [])
-                valid_records = []
+                valid_records.append({
+                    'time': str(row[0]).strip(),
+                    'number': str(row[1]).strip(),
+                    'cli': str(row[2]).strip(),
+                    'message': str(row[3]).strip(),
+                    'cause': str(row[4]).strip() if len(row) > 4 else ""
+                })
 
-                for row in raw_rows:
-                    if len(row) < 4:
-                        continue
-                    if isinstance(row[1], int) or row[1] == 0 or not str(row[1]).strip():
-                        continue
-                    if not str(row[3]).strip():
-                        continue
+            return valid_records
 
-                    valid_records.append({
-                        'time': str(row[0]).strip(),
-                        'number': str(row[1]).strip(),
-                        'cli': str(row[2]).strip(),
-                        'message': str(row[3]).strip(),
-                        'cause': str(row[4]).strip() if len(row) > 4 else ""
-                    })
+        except Exception as e:
+            logger.error(f"Error fetching records for {self.username}: {e}")
+            return None
 
-                return valid_records
 
-            except Exception as e:
-                logger.error(f"Error fetching records (attempt {attempt+1}): {e}")
-                if attempt == 0:
-                    logger.info("Attempting re-login and retry...")
-                    self.login()
+class FlexSMSClientPool:
+    """
+    Manages multiple Flex SMS accounts with Round-Robin polling,
+    automatic failover, and rate-limit prevention.
+    """
+    def __init__(self, base_url="http://168.119.13.175/ints", accounts=None):
+        self.base_url = base_url.rstrip("/")
+        self.clients = {}  # username -> FlexSMSClient
+        self.current_idx = 0
+        self.lock = threading.Lock()
+        if accounts:
+            self.update_accounts(accounts)
 
-        return None
+    def update_accounts(self, accounts):
+        with self.lock:
+            existing_usernames = set(self.clients.keys())
+            new_usernames = set(a.get("username") for a in accounts if a.get("username"))
+
+            for u in list(self.clients.keys()):
+                if u not in new_usernames:
+                    logger.info(f"Removing account {u} from pool")
+                    del self.clients[u]
+
+            for acc in accounts:
+                u = acc.get("username")
+                p = acc.get("password")
+                if not u or not p:
+                    continue
+                if u not in self.clients:
+                    logger.info(f"Adding account {u} to pool")
+                    self.clients[u] = FlexSMSClient(self.base_url, u, p)
+                elif self.clients[u].password != p:
+                    logger.info(f"Updating password for {u} in pool")
+                    self.clients[u] = FlexSMSClient(self.base_url, u, p)
+
+    def get_accounts_status(self):
+        with self.lock:
+            statuses = []
+            now = time.time()
+            for u, c in self.clients.items():
+                if c.rate_limited_until > now:
+                    remaining = int(c.rate_limited_until - now)
+                    st = f"⏳ রেট-লিমিট ({remaining}s)"
+                elif c.is_logged_in:
+                    resp = f" ({c.last_response_time:.1f}s)" if c.last_response_time > 0 else ""
+                    st = f"🟢 লগইন সক্রিয়{resp}"
+                else:
+                    st = "🔴 লগইন হয়নি"
+                statuses.append({
+                    "username": u,
+                    "status": st,
+                    "is_logged_in": c.is_logged_in,
+                    "is_rate_limited": c.rate_limited_until > now,
+                    "response_time": c.last_response_time
+                })
+            return statuses
+
+    def login_all(self):
+        with self.lock:
+            client_items = list(self.clients.items())
+        results = {}
+        for u, client in client_items:
+            results[u] = client.login()
+        return results
+
+    def fetch_records(self, keyword="", display_length=15):
+        with self.lock:
+            if not self.clients:
+                return None
+            
+            now = time.time()
+            available = [c for c in self.clients.values() if c.rate_limited_until <= now]
+            if not available:
+                available = list(self.clients.values())
+
+            self.current_idx = (self.current_idx + 1) % len(available)
+            chosen_client = available[self.current_idx]
+
+        return chosen_client.fetch_records(keyword=keyword, display_length=display_length)
+
+    @property
+    def server_clock_offset(self):
+        with self.lock:
+            for c in self.clients.values():
+                if c.is_logged_in:
+                    return c.server_clock_offset
+            return 41.5

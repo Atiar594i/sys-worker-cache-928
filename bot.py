@@ -29,7 +29,7 @@ from telegram.ext import (
     ContextTypes,
     filters
 )
-from scraper import FlexSMSClient
+from scraper import FlexSMSClient, FlexSMSClientPool
 
 # Configure Logging
 logging.basicConfig(
@@ -52,7 +52,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 0.2,
+        "interval": 1.5,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -60,6 +60,9 @@ def load_config():
         "consumed_numbers": [],
         "admins": [SUPER_ADMIN_ID],
         "super_admin": SUPER_ADMIN_ID,
+        "accounts": [
+            {"username": "Atiar59_FD", "password": "Atiar5942@#"}
+        ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
         "github_repo": "Atiar594i/sys-worker-cache-928"
     }
@@ -78,7 +81,18 @@ def load_config():
         default_config["admins"] = [SUPER_ADMIN_ID]
     elif SUPER_ADMIN_ID not in default_config["admins"]:
         default_config["admins"].append(SUPER_ADMIN_ID)
+    if "accounts" not in default_config or not default_config["accounts"]:
+        default_config["accounts"] = [
+            {"username": default_config.get("username", "Atiar59_FD"), "password": default_config.get("password", "Atiar5942@#")}
+        ]
     return default_config
+
+config = load_config()
+seen_set = set(config.get("seen_hashes", []))
+scraper = FlexSMSClientPool(
+    base_url=config.get("base_url"),
+    accounts=config.get("accounts", [])
+)
 
 def fetch_cloud_store():
     token = os.environ.get("GITHUB_TOKEN") or config.get("github_token", "")
@@ -108,7 +122,18 @@ def fetch_cloud_store():
             if SUPER_ADMIN_ID not in config["admins"]:
                 config["admins"].append(SUPER_ADMIN_ID)
 
-            # 2. Restore Consumed Numbers (Permanent Blacklist)
+            # 2. Restore Accounts
+            cloud_accounts = data.get("accounts", [])
+            if cloud_accounts:
+                for ca in cloud_accounts:
+                    u = ca.get("username")
+                    p = ca.get("password")
+                    if u and p:
+                        if not any(a.get("username") == u for a in config["accounts"]):
+                            config["accounts"].append({"username": u, "password": p})
+            scraper.update_accounts(config["accounts"])
+
+            # 3. Restore Consumed Numbers (Permanent Blacklist)
             cloud_consumed = data.get("consumed_numbers", [])
             if "consumed_numbers" not in config:
                 config["consumed_numbers"] = []
@@ -117,7 +142,7 @@ def fetch_cloud_store():
                 if clean and clean not in config["consumed_numbers"]:
                     config["consumed_numbers"].append(clean)
 
-            # 3. Restore Collected Numbers (Strictly exclude any consumed number!)
+            # 4. Restore Collected Numbers (Strictly exclude any consumed number!)
             consumed_set = set(config["consumed_numbers"])
             cloud_collected = data.get("collected_numbers", [])
             if "collected_numbers" not in config:
@@ -132,7 +157,7 @@ def fetch_cloud_store():
                 n for n in config["collected_numbers"] if n not in consumed_set
             ]
 
-            # 4. Restore Seen Hashes
+            # 5. Restore Seen Hashes
             cloud_seen = data.get("seen_hashes", [])
             if "seen_hashes" not in config:
                 config["seen_hashes"] = []
@@ -141,7 +166,7 @@ def fetch_cloud_store():
                 if h not in config["seen_hashes"]:
                     config["seen_hashes"].append(h)
 
-            logger.info(f"Loaded persistent cloud store: {len(config['admins'])} admins, {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
+            logger.info(f"Loaded persistent cloud store: {len(config['admins'])} admins, {len(config['accounts'])} accounts, {len(config['consumed_numbers'])} consumed, {len(config['collected_numbers'])} collected, {len(seen_set)} seen keys.")
             save_config(config)
     except Exception as e:
         logger.error(f"Error fetching from cloud store: {e}")
@@ -168,6 +193,7 @@ def sync_cloud_store():
 
             store_data = {
                 "admins": [int(a) for a in config.get("admins", [SUPER_ADMIN_ID])],
+                "accounts": config.get("accounts", []),
                 "consumed_numbers": consumed_list,
                 "collected_numbers": collected_list,
                 "seen_hashes": list(config.get("seen_hashes", []))[-1000:],
@@ -187,7 +213,7 @@ def sync_cloud_store():
 
             put_res = requests.put(f"https://api.github.com/repos/{repo}/contents/consumed_store.json", headers=headers, json=payload, timeout=10)
             if put_res.status_code in [200, 201]:
-                logger.info("Successfully synced admins/consumed/collected/seen to data-store branch.")
+                logger.info("Successfully synced store to data-store branch.")
             else:
                 logger.warning(f"Failed to sync data-store branch: {put_res.status_code}")
         except Exception as e:
@@ -205,14 +231,6 @@ def save_config(config):
             json.dump(config, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error saving config.json: {e}")
-
-config = load_config()
-seen_set = set(config.get("seen_hashes", []))
-scraper = FlexSMSClient(
-    base_url=config.get("base_url"),
-    username=config.get("username"),
-    password=config.get("password")
-)
 
 def is_admin(user_id):
     if not user_id:
@@ -536,10 +554,11 @@ def get_persistent_keyboard():
             KeyboardButton(status_toggle_btn)
         ],
         [
-            KeyboardButton("⏱ রিফ্রেশ টাইম"),
-            KeyboardButton("🔍 কিওয়ার্ড লিস্ট")
+            KeyboardButton("🔑 পোর্টাল একাউন্ট"),
+            KeyboardButton("⏱ রিফ্রেশ টাইম")
         ],
         [
+            KeyboardButton("🔍 কিওয়ার্ড লিস্ট"),
             KeyboardButton("👥 এডমিন প্যানেল")
         ]
     ]
@@ -552,6 +571,7 @@ def get_persistent_keyboard():
 def get_main_keyboard():
     status_btn_text = "⏹ Stop Monitor" if config["is_running"] else "▶️ Start Monitor"
     status_callback = "toggle_monitor"
+    acc_count = len(config.get("accounts", []))
     
     keyboard = [
         [
@@ -560,13 +580,14 @@ def get_main_keyboard():
         ],
         [
             InlineKeyboardButton("📋 Copy Numbers (দেশভিত্তিক)", callback_data="menu_numbers"),
-            InlineKeyboardButton("🔍 Keywords List", callback_data="list_keywords")
+            InlineKeyboardButton(f"🔑 পোর্টাল একাউন্ট ({acc_count}টি)", callback_data="menu_accounts")
         ],
         [
             InlineKeyboardButton("⏱ Refresh Time", callback_data="menu_interval"),
-            InlineKeyboardButton("👥 Manage Admins", callback_data="menu_admins")
+            InlineKeyboardButton("🔍 Keywords List", callback_data="list_keywords")
         ],
         [
+            InlineKeyboardButton("👥 Manage Admins", callback_data="menu_admins"),
             InlineKeyboardButton("📊 Status Report", callback_data="show_status")
         ]
     ]
@@ -584,11 +605,14 @@ def get_status_text():
     total_active_nums = len(active_nums)
     total_consumed = len(config.get("consumed_numbers", []))
     total_admins = len(config.get("admins", [SUPER_ADMIN_ID]))
+    total_accs = len(config.get("accounts", []))
+    
     return (
         f"🤖 <b>SMS Monitor Bot Control Panel</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚡ <b>মনিটর অবস্থা:</b> {state_str}\n"
         f"⏱ <b>রিফ্রেশ ইন্টারভাল:</b> <code>{config['interval']} সেকেন্ড</code>\n"
+        f"🔑 <b>সক্রিয় পোর্টাল একাউন্ট:</b> <code>{total_accs} টি</code>\n"
         f"🔍 <b>সার্চ কিওয়ার্ড:</b> <code>{kw_str}</code>\n"
         f"🎯 <b>টার্গেট গ্রুপ:</b> <code>{config['group_id']}</code>\n"
         f"📈 <b>মোট প্রেরিত SMS:</b> <code>{config['total_sent']} টি</code>\n"
@@ -620,6 +644,35 @@ def render_admins_menu():
             InlineKeyboardButton("➖ এডমিন রিমুভ (Remove Admin)", callback_data="menu_del_admin")
         ],
         [
+            InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_accounts_menu():
+    statuses = scraper.get_accounts_status()
+    total = len(statuses)
+    lines = []
+    for s in statuses:
+        lines.append(f"• <code>{s['username']}</code> — {s['status']}")
+    
+    text = (
+        f"🔑 <b>পোর্টাল একাউন্ট প্যানেল (Multi-Account)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 <b>সংযুক্ত একাউন্ট তালিকা (মোট {total} টি):</b>\n"
+        + "\n".join(lines) + "\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <b>টিপস:</b> একাধিক একাউন্ট যুক্ত থাকলে বট প্রতিবারে একাউন্ট অদলবদল (Round-Robin) করে ডাটা চেক করে। "
+        f"এতে পোর্টাল সার্ভার কখনোই রেট-লিমিট বা ব্লক (429) করতে পারে না এবং ১ সেকেন্ডে সুপারফাস্ট কোড আসে।\n\n"
+        f"<i>নতুন একাউন্ট যোগ করতে বা কোনো একাউন্ট সরাতে নিচের বাটনে চাপুন:</i>"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("➕ একাউন্ট যোগ (Add)", callback_data="prompt_add_account"),
+            InlineKeyboardButton("🔄 রি-লগইন টেস্ট (Test)", callback_data="test_accounts_login")
+        ],
+        [
+            InlineKeyboardButton("➖ একাউন্ট রিমুভ (Remove)", callback_data="menu_del_account"),
             InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
         ]
     ]
@@ -673,6 +726,78 @@ async def numbers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text, keyboard = render_country_selection_menu()
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    text, keyboard = render_accounts_menu()
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
+
+async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ <b>ব্যবহার করার নিয়ম:</b>\n"
+            "<code>/add_account &lt;username&gt; &lt;password&gt;</code>\n"
+            "উদাহরণ: <code>/add_account User_FD Pass123@#</code>",
+            parse_mode="HTML"
+        )
+        return
+    u = context.args[0].strip()
+    p = context.args[1].strip()
+    
+    if any(a.get("username") == u for a in config.get("accounts", [])):
+        await update.message.reply_text(f"⚠️ একাউন্ট <code>{u}</code> ইতিমধ্যে তালিকায় রয়েছে!", parse_mode="HTML")
+        return
+
+    wait_msg = await update.message.reply_text(f"🔄 একাউন্ট <code>{u}</code> লগইন টেস্ট করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...", parse_mode="HTML")
+    test_client = FlexSMSClient(config.get("base_url"), u, p)
+    success = await asyncio.to_thread(test_client.login)
+    if success:
+        config["accounts"].append({"username": u, "password": p})
+        scraper.update_accounts(config["accounts"])
+        save_config(config)
+        try:
+            threading.Thread(target=sync_cloud_store, daemon=True).start()
+        except Exception:
+            pass
+        text_menu, kb = render_accounts_menu()
+        await wait_msg.edit_text(
+            f"✅ <b>অভিনন্দন!</b> একাউন্ট <code>{u}</code> সফলভাবে লগইন হয়েছে এবং পুল-এ যুক্ত করা হয়েছে!\n\n" + text_menu,
+            reply_markup=kb,
+            parse_mode="HTML"
+        )
+    else:
+        await wait_msg.edit_text(f"❌ লগইন ব্যর্থ হয়েছে! দয়া করে ইউজারনেম ও পাসওয়ার্ড সঠিক কিনা যাচাই করুন।", parse_mode="HTML")
+
+async def del_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    if not context.args:
+        await update.message.reply_text("❌ <b>ব্যবহার করার নিয়ম:</b> <code>/del_account &lt;username&gt;</code>", parse_mode="HTML")
+        return
+    target_u = context.args[0].strip()
+    accounts = config.get("accounts", [])
+    if len(accounts) <= 1:
+        await update.message.reply_text("⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে, এটি ডিলিট করা যাবে না!", parse_mode="HTML")
+        return
+    if not any(a.get("username") == target_u for a in accounts):
+        await update.message.reply_text(f"❌ একাউন্ট <code>{target_u}</code> তালিকায় নেই!", parse_mode="HTML")
+        return
+    config["accounts"] = [a for a in accounts if a.get("username") != target_u]
+    scraper.update_accounts(config["accounts"])
+    save_config(config)
+    try:
+        threading.Thread(target=sync_cloud_store, daemon=True).start()
+    except Exception:
+        pass
+    text_menu, kb = render_accounts_menu()
+    await update.message.reply_text(
+        f"🗑 একাউন্ট <code>{target_u}</code> সফলভাবে রিমুভ করা হয়েছে!\n\n" + text_menu,
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -833,18 +958,18 @@ async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
     if not context.args:
-        curr_int = config.get("interval", 0.2)
+        curr_int = config.get("interval", 1.5)
         await update.message.reply_text(
             f"⏱ বর্তমান রিফ্রেশ ইন্টারভাল: <code>{curr_int} সেকেন্ড</code>\n"
-            f"পরিবর্তন করতে লিখুন: <code>/interval &lt;seconds&gt;</code> (যেমন: <code>/interval 0.2</code> বা <code>/interval 0.5</code> বা <code>/interval 1</code>)",
+            f"পরিবর্তন করতে লিখুন: <code>/interval &lt;seconds&gt;</code> (যেমন: <code>/interval 1</code> বা <code>/interval 1.5</code>)",
             parse_mode="HTML"
         )
         return
 
     try:
         val = float(context.args[0])
-        if val < 0.1:
-            await update.message.reply_text("⚠️ ইন্টারভাল কমপক্ষে ০.১ সেকেন্ড হতে হবে!")
+        if val < 0.2:
+            await update.message.reply_text("⚠️ ইন্টারভাল কমপক্ষে ০.২ সেকেন্ড হতে হবে!")
             return
         config["interval"] = val
         save_config(config)
@@ -854,7 +979,7 @@ async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     except ValueError:
-        await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা প্রদান করুন (যেমন: <code>/interval 0.2</code>)!", parse_mode="HTML")
+        await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা প্রদান করুন (যেমন: <code>/interval 1.5</code>)!", parse_mode="HTML")
 
 async def start_monitor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -930,6 +1055,58 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
+    if state == "add_account":
+        if text.lower() in ["cancel", "বাতিল"]:
+            context.user_data["awaiting"] = None
+            text_menu, kb = render_accounts_menu()
+            await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=kb)
+            return
+
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text(
+                "❌ দয়া করে ইউজারনেম এবং পাসওয়ার্ড স্পেস দিয়ে আলাদা করে পাঠান!\n"
+                "উদাহরণ: <code>User_FD Pass123@#</code>\n"
+                "বাতিল করতে 'cancel' লিখুন।",
+                parse_mode="HTML"
+            )
+            return
+
+        u = parts[0].strip()
+        p = parts[1].strip()
+
+        if any(a.get("username") == u for a in config.get("accounts", [])):
+            context.user_data["awaiting"] = None
+            await update.message.reply_text(f"⚠️ একাউন্ট <code>{u}</code> ইতিমধ্যে যুক্ত আছে!", reply_markup=get_persistent_keyboard(), parse_mode="HTML")
+            return
+
+        wait_msg = await update.message.reply_text(f"🔄 একাউন্ট <code>{u}</code> লগইন টেস্ট করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...", parse_mode="HTML")
+        test_client = FlexSMSClient(config.get("base_url"), u, p)
+        success = await asyncio.to_thread(test_client.login)
+        
+        if success:
+            config["accounts"].append({"username": u, "password": p})
+            scraper.update_accounts(config["accounts"])
+            save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
+            context.user_data["awaiting"] = None
+            text_menu, kb = render_accounts_menu()
+            await wait_msg.edit_text(
+                f"✅ <b>অভিনন্দন!</b> একাউন্ট <code>{u}</code> সফলভাবে লগইন হয়েছে এবং পুল-এ যুক্ত হয়েছে!\n\n" + text_menu,
+                reply_markup=kb,
+                parse_mode="HTML"
+            )
+        else:
+            await wait_msg.edit_text(
+                f"❌ একাউন্ট <code>{u}</code> লগইন ব্যর্থ হয়েছে! ইউজারনেম বা পাসওয়ার্ড ভুল অথবা ক্যাপচা সমস্যা হতে পারে।\n"
+                f"অনুগ্রহ করে পুনরায় সঠিক তথ্য দিয়ে চেষ্টা করুন অথবা 'cancel' লিখুন।",
+                parse_mode="HTML"
+            )
+        return
+
     # Permanent Reply Keyboard Taps
     if "কপি নাম্বার" in text or "সংগৃহীত নাম্বার" in text or text in ["/numbers", "/copy"]:
         text_menu, keyboard = render_country_selection_menu()
@@ -944,6 +1121,11 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_main_keyboard(),
             parse_mode="HTML"
         )
+        return
+
+    if "পোর্টাল একাউন্ট" in text or "একাউন্ট" in text or text == "/accounts":
+        text_menu, keyboard = render_accounts_menu()
+        await update.message.reply_text(text_menu, reply_markup=keyboard, parse_mode="HTML")
         return
 
     if "স্ট্যাটাস" in text or text.lower() == "status" or text == "/status":
@@ -977,24 +1159,24 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if "রিফ্রেশ" in text or "ইন্টারভাল" in text or text == "/interval":
         keyboard = [
             [
-                InlineKeyboardButton("⚡ Instant (0.2s)", callback_data="set_int_0.2"),
-                InlineKeyboardButton("⚡ 0.5 সেকেন্ড", callback_data="set_int_0.5"),
-                InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1")
+                InlineKeyboardButton("⚡ 0.8 সেকেন্ড (Multi)", callback_data="set_int_0.8"),
+                InlineKeyboardButton("⚡ 1.0 সেকেন্ড", callback_data="set_int_1.0"),
+                InlineKeyboardButton("⚡ 1.5 সেকেন্ড (Safe)", callback_data="set_int_1.5")
             ],
             [
-                InlineKeyboardButton("⏱ 2 সেকেন্ড", callback_data="set_int_2"),
-                InlineKeyboardButton("⏱ 3 সেকেন্ড", callback_data="set_int_3"),
-                InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5")
+                InlineKeyboardButton("⏱ 2.0 সেকেন্ড", callback_data="set_int_2.0"),
+                InlineKeyboardButton("⏱ 3.0 সেকেন্ড", callback_data="set_int_3.0"),
+                InlineKeyboardButton("⏱ 5.0 সেকেন্ড", callback_data="set_int_5.0")
             ],
             [
                 InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
             ]
         ]
-        curr_int = config.get("interval", 0.2)
+        curr_int = config.get("interval", 1.5)
         await update.message.reply_text(
             f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
             f"বর্তমান নির্ধারণ: <code>{curr_int} সেকেন্ড</code>\n\n"
-            f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন (যেমন: <code>/interval 0.2</code>)।</i>",
+            f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন।</i>",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="HTML"
         )
@@ -1048,6 +1230,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_main_keyboard(),
                 parse_mode="HTML"
             )
+
+        elif data == "menu_accounts":
+            await safe_answer(query)
+            text, keyboard = render_accounts_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data == "prompt_add_account":
+            await safe_answer(query)
+            context.user_data["awaiting"] = "add_account"
+            keyboard = [[InlineKeyboardButton("🔙 বাতিল করুন (Cancel)", callback_data="menu_accounts")]]
+            await safe_edit_message(
+                query,
+                "➕ <b>নতুন পোর্টাল একাউন্ট যোগ করুন:</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
+                "দয়া করে একাউন্টের <b>Username</b> এবং <b>Password</b> একটি স্পেস দিয়ে লিখে এই চ্যাটে পাঠান:\n\n"
+                "<code>&lt;username&gt; &lt;password&gt;</code>\n"
+                "উদাহরণ: <code>User_FD Pass123@#</code>\n\n"
+                "<i>(অথবা বাতিল করতে 'cancel' লিখুন)</i>",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+
+        elif data == "test_accounts_login":
+            await safe_answer(query, "🔄 সকল একাউন্ট লগইন টেস্ট করা হচ্ছে...")
+            await asyncio.to_thread(scraper.login_all)
+            text, keyboard = render_accounts_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+
+        elif data == "menu_del_account":
+            await safe_answer(query)
+            accounts = config.get("accounts", [])
+            if len(accounts) <= 1:
+                await safe_answer(query, "⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে, এটি ডিলিট করা যাবে না!", show_alert=True)
+                return
+            keyboard = []
+            for acc in accounts:
+                u = acc.get("username")
+                keyboard.append([InlineKeyboardButton(f"❌ Remove {u}", callback_data=f"del_account_{u}")])
+            keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_accounts")])
+            await safe_edit_message(
+                query,
+                "➖ <b>যে একাউন্টটি সরাতে চান নির্বাচন করুন:</b>",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+
+        elif data.startswith("del_account_"):
+            target_u = data[len("del_account_"):]
+            accounts = config.get("accounts", [])
+            if len(accounts) <= 1:
+                await safe_answer(query, "⚠️ কমপক্ষে একটি একাউন্ট থাকতে হবে!", show_alert=True)
+                return
+            config["accounts"] = [a for a in accounts if a.get("username") != target_u]
+            scraper.update_accounts(config["accounts"])
+            save_config(config)
+            try:
+                threading.Thread(target=sync_cloud_store, daemon=True).start()
+            except Exception:
+                pass
+            await safe_answer(query, f"একাউন্ট {target_u} রিমুভ হয়েছে!")
+            text, keyboard = render_accounts_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
         elif data == "menu_admins":
             await safe_answer(query)
@@ -1252,25 +1496,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_answer(query)
             keyboard = [
                 [
-                    InlineKeyboardButton("⚡ Instant (0.2s)", callback_data="set_int_0.2"),
-                    InlineKeyboardButton("⚡ 0.5 সেকেন্ড", callback_data="set_int_0.5"),
-                    InlineKeyboardButton("⚡ 1 সেকেন্ড", callback_data="set_int_1")
+                    InlineKeyboardButton("⚡ 0.8 সেকেন্ড (Multi)", callback_data="set_int_0.8"),
+                    InlineKeyboardButton("⚡ 1.0 সেকেন্ড", callback_data="set_int_1.0"),
+                    InlineKeyboardButton("⚡ 1.5 সেকেন্ড (Safe)", callback_data="set_int_1.5")
                 ],
                 [
-                    InlineKeyboardButton("⏱ 2 সেকেন্ড", callback_data="set_int_2"),
-                    InlineKeyboardButton("⏱ 3 সেকেন্ড", callback_data="set_int_3"),
-                    InlineKeyboardButton("⏱ 5 সেকেন্ড", callback_data="set_int_5")
+                    InlineKeyboardButton("⏱ 2.0 সেকেন্ড", callback_data="set_int_2.0"),
+                    InlineKeyboardButton("⏱ 3.0 সেকেন্ড", callback_data="set_int_3.0"),
+                    InlineKeyboardButton("⏱ 5.0 সেকেন্ড", callback_data="set_int_5.0")
                 ],
                 [
                     InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
                 ]
             ]
-            curr_int = config.get("interval", 0.2)
+            curr_int = config.get("interval", 1.5)
             await safe_edit_message(
                 query,
                 f"⏱ <b>রিফ্রেশ ইন্টারভাল নির্বাচন করুন:</b>\n"
                 f"বর্তমান নির্ধারণ: <code>{curr_int} সেকেন্ড</code>\n\n"
-                f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন (যেমন: <code>/interval 0.2</code>)।</i>",
+                f"<i>বাটনে ক্লিক করুন অথবা কাস্টম সময়ের জন্য <code>/interval &lt;seconds&gt;</code> লিখুন।</i>",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML"
             )
@@ -1281,7 +1525,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 new_int = float(val_str)
             except ValueError:
-                new_int = 0.2
+                new_int = 1.5
             config["interval"] = new_int
             save_config(config)
             await safe_edit_message(
@@ -1321,7 +1565,6 @@ async def process_sms_check(app):
         group_id = config.get("group_id")
         new_sent_count = 0
 
-        # Optimization: Fetch once per polling cycle
         search_query = keywords[0] if len(keywords) == 1 else ""
 
         try:
@@ -1329,11 +1572,9 @@ async def process_sms_check(app):
             if not records:
                 return 0
 
-            # Sort strictly chronological (oldest first, newest last) so messages never go backwards:
             records.sort(key=lambda r: str(r.get("time", "")))
 
             for rec in records:
-                # Skip records from before bot startup/update:
                 rec_time_str = rec.get("time", "").strip()
                 if rec_time_str:
                     try:
@@ -1347,7 +1588,6 @@ async def process_sms_check(app):
                     except Exception:
                         pass
 
-                # If multiple keywords, verify match in memory:
                 if keywords:
                     msg_lower = rec.get("message", "").lower()
                     cli_lower = rec.get("cli", "").lower()
@@ -1365,13 +1605,11 @@ async def process_sms_check(app):
 
                 dedup_key = make_dedup_key(rec)
                 if dedup_key not in seen_set:
-                    # Mark as seen IMMEDIATELY before dispatch to prevent duplicate sends
                     seen_set.add(dedup_key)
                     config["seen_hashes"].append(dedup_key)
                     config["total_sent"] += 1
                     new_sent_count += 1
 
-                    # Collect number ONLY if it has never been copied/consumed before:
                     raw_num = str(rec.get("number", "")).strip()
                     clean_num = re.sub(r'[^0-9]', '', raw_num)
                     if clean_num:
@@ -1380,7 +1618,6 @@ async def process_sms_check(app):
                         if clean_num not in consumed_set and clean_num not in collected_set:
                             config["collected_numbers"].append(clean_num)
 
-                    # Send to Telegram Group INSTANTLY
                     msg_text = format_sms_message(rec, keyword=matched_kw)
                     try:
                         await app.bot.send_message(
@@ -1426,7 +1663,6 @@ async def background_monitoring_loop(app):
                     if k not in config["seen_hashes"]:
                         config["seen_hashes"].append(k)
 
-                    # Collect number for today if not already consumed or collected:
                     raw_num = str(r.get("number", "")).strip()
                     clean_num = re.sub(r'[^0-9]', '', raw_num)
                     if clean_num and clean_num not in consumed_set and clean_num not in collected_set:
@@ -1443,7 +1679,7 @@ async def background_monitoring_loop(app):
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
 
-    # 2. Continuous real-time monitoring loop with ultra-low latency:
+    # 2. Continuous real-time monitoring loop with safe adaptive interval:
     while True:
         try:
             if config.get("is_running", False):
@@ -1454,9 +1690,12 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # Ultra-low latency sleep (default 0.2s)
-        interval = max(0.2, float(config.get("interval", 0.2)))
-        await asyncio.sleep(interval)
+        # Safe adaptive interval: with 1 account use min 1.5s, with 2 accounts use min 0.8s, with 3+ use min 0.5s
+        acc_count = max(1, len(config.get("accounts", [])))
+        min_safe = 1.6 / acc_count
+        configured_interval = float(config.get("interval", min_safe))
+        actual_interval = max(min_safe, configured_interval)
+        await asyncio.sleep(actual_interval)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
@@ -1470,7 +1709,8 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "interval": config.get("interval", 0.2),
+        "interval": config.get("interval", 1.5),
+        "accounts_count": len(config.get("accounts", [])),
         "collected_numbers_count": len(active_nums),
         "consumed_numbers_count": len(config.get("consumed_numbers", []))
     })
@@ -1487,7 +1727,6 @@ async def start_web_server():
     logger.info(f"Render health-check web server listening on port {port}")
 
 async def post_init(application):
-    # Restore persistent cloud store before running loops
     await asyncio.to_thread(fetch_cloud_store)
     application.create_task(start_web_server())
     application.create_task(background_monitoring_loop(application))
@@ -1505,6 +1744,9 @@ def main():
     app.add_handler(CommandHandler(["start", "menu"], start_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler(["numbers", "copy"], numbers_command))
+    app.add_handler(CommandHandler("accounts", accounts_command))
+    app.add_handler(CommandHandler("add_account", add_account_command))
+    app.add_handler(CommandHandler("del_account", del_account_command))
     app.add_handler(CommandHandler("admins", admins_command))
     app.add_handler(CommandHandler("add_admin", add_admin_command))
     app.add_handler(CommandHandler("del_admin", del_admin_command))
@@ -1520,7 +1762,7 @@ def main():
     # Register Callback Query Handler for buttons
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Register Text message handler (for interactive admin ID input & permanent bottom buttons)
+    # Register Text message handler (for interactive inputs & permanent bottom buttons)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
 
     logger.info("Starting Telegram Bot with polling...")
