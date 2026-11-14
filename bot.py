@@ -1594,31 +1594,18 @@ async def process_sms_check(app):
         group_id = config.get("group_id")
         new_sent_count = 0
 
-        # Query the portal with keyword="" to leverage the index (ORDER BY time DESC)
-        # and eliminate the expensive MySQL LIKE '%...%' full-table scan.
-        # This reduces portal response time from 3.5s down to ~0.5s!
-        # Client-side keyword filtering (e.g. Telegram) runs below in microseconds.
+        # Strictly query portal with targeted keyword (e.g. Telegram)
+        # so zero Telegram messages are ever buried or missed by high-volume traffic from other apps!
+        search_query = keywords[0] if len(keywords) == 1 else ""
+
         try:
-            records = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=30)
+            records = await asyncio.to_thread(scraper.fetch_records, keyword=search_query, display_length=20)
             if not records:
                 return 0
 
             records.sort(key=lambda r: str(r.get("time", "")))
 
             for rec in records:
-                rec_time_str = rec.get("time", "").strip()
-                if rec_time_str:
-                    try:
-                        rec_dt = datetime.strptime(rec_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                        server_offset = getattr(scraper, "server_clock_offset", 41.5)
-                        startup_limit = BOT_STARTUP_TIME - timedelta(seconds=server_offset + 5)
-                        if rec_dt < startup_limit:
-                            dedup_key = make_dedup_key(rec)
-                            seen_set.add(dedup_key)
-                            continue
-                    except Exception:
-                        pass
-
                 if keywords:
                     msg_lower = rec.get("message", "").lower()
                     cli_lower = rec.get("cli", "").lower()
@@ -1723,10 +1710,10 @@ async def background_monitoring_loop(app):
 
         # Turbo adaptive interval:
         # With 2+ accounts alternating in round-robin, each account gets >2.2s resting window.
-        # 0.35s sleep provides fresh portal records every ~1.1s, keeping delivery latency strictly within 1-2s!
+        # 0.2s sleep ensures that continuous sequential checks detect and deliver incoming SMS instantly!
         acc_count = max(1, len(config.get("accounts", [])))
         if acc_count >= 2:
-            min_safe = 0.35
+            min_safe = 0.2
         else:
             min_safe = 1.2
         configured_interval = float(config.get("interval", min_safe))
