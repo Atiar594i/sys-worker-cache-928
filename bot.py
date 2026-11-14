@@ -492,9 +492,12 @@ def format_sms_message(rec, keyword=""):
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            p_bd = p_dt + timedelta(hours=6)
-            panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
+            # Calibrate portal server clock skew (Hetzner motherboard clock is ~43.5s behind standard UTC)
+            server_offset = getattr(scraper, "server_clock_offset", 43.5)
+            calibrated_p_dt = p_dt + timedelta(seconds=server_offset)
+            calibrated_p_bd = calibrated_p_dt + timedelta(hours=6)
+            panel_display = calibrated_p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_seconds = max(0, int((now_bd - calibrated_p_bd).total_seconds()))
         except Exception:
             panel_display = raw_panel
 
@@ -1598,7 +1601,7 @@ async def process_sms_check(app):
 
         for kw in search_targets:
             try:
-                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=25)
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=15)
                 if not records:
                     continue
 
@@ -1695,7 +1698,7 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
