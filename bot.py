@@ -508,7 +508,7 @@ def format_sms_message(rec, keyword=""):
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
             raw_diff = max(0, int((now_bd - p_bd).total_seconds()))
-            if raw_diff <= 2:
+            if 1 <= raw_diff <= 3:
                 diff_seconds = raw_diff
                 panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
             else:
