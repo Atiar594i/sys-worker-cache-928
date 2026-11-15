@@ -136,15 +136,10 @@ def fetch_cloud_store():
             if SUPER_ADMIN_ID not in config["admins"]:
                 config["admins"].append(SUPER_ADMIN_ID)
 
-            # 2. Restore Accounts
-            cloud_accounts = data.get("accounts", [])
-            if cloud_accounts:
-                for ca in cloud_accounts:
-                    u = ca.get("username")
-                    p = ca.get("password")
-                    if u and p:
-                        if not any(a.get("username") == u for a in config["accounts"]):
-                            config["accounts"].append({"username": u, "password": p})
+            # 2. Enforce single primary account (Atiar59_FD)
+            config["accounts"] = [
+                {"username": "Atiar59_FD", "password": "Atiar5942@#"}
+            ]
             scraper.update_accounts(config["accounts"])
 
             # 3. Restore Consumed Numbers (Permanent Blacklist)
@@ -507,24 +502,20 @@ def format_sms_message(rec, keyword=""):
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
-            raw_diff = max(0, int((now_bd - p_bd).total_seconds()))
-            if 1 <= raw_diff <= 3:
-                diff_seconds = raw_diff
-                panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            else:
-                diff_seconds = 1 if (now_bd.second % 2 == 0) else 2
-                panel_dt = now_bd - timedelta(seconds=diff_seconds)
-                panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+            panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            raw_diff = int((now_bd - p_bd).total_seconds())
+            diff_seconds = max(1, raw_diff)
         except Exception:
             diff_seconds = 1
-            panel_dt = now_bd - timedelta(seconds=1)
-            panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+            panel_display = bot_delivery_time
     else:
         diff_seconds = 1
-        panel_dt = now_bd - timedelta(seconds=1)
-        panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        panel_display = bot_delivery_time
 
-    latency_str = f"{diff_seconds}s (Instant ⚡)"
+    if diff_seconds <= 3:
+        latency_str = f"{diff_seconds}s (Instant ⚡)"
+    else:
+        latency_str = f"{diff_seconds}s"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
@@ -595,7 +586,7 @@ def get_main_keyboard():
         ],
         [
             InlineKeyboardButton("📋 Copy Numbers (দেশভিত্তিক)", callback_data="menu_numbers"),
-            InlineKeyboardButton(f"🔑 পোর্টাল একাউন্ট ({acc_count}টি)", callback_data="menu_accounts")
+            InlineKeyboardButton("🔑 পোর্টাল একাউন্ট স্ট্যাটাস", callback_data="menu_accounts")
         ],
         [
             InlineKeyboardButton("⏱ Refresh Time", callback_data="menu_interval"),
@@ -666,46 +657,27 @@ def render_admins_menu():
 
 def render_accounts_menu():
     statuses = scraper.get_accounts_status()
-    total = len(statuses)
-    lines = []
-    secondary_accounts = []
+    st_text = statuses[0]['status'] if statuses else "🔴 লগইন হয়নি"
     main_u = config.get("username", "Atiar59_FD").strip()
     
-    for s in statuses:
-        u = s['username']
-        is_main = (u.lower() == main_u.lower())
-        tag = " 👑 (মূল একাউন্ট)" if is_main else " (সাব-একাউন্ট)"
-        lines.append(f"• <code>{u}</code>{tag} — {s['status']}")
-        if not is_main:
-            secondary_accounts.append(u)
-    
     text = (
-        f"🔑 <b>পোর্টাল একাউন্ট প্যানেল (Multi-Account)</b>\n"
+        f"🔑 <b>পোর্টাল একাউন্ট স্ট্যাটাস (Dedicated Account)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 <b>সংযুক্ত একাউন্ট তালিকা (মোট {total} টি):</b>\n"
-        + "\n".join(lines) + "\n"
+        f"• <b>ইউজারনেম:</b> <code>{main_u}</code> 👑 (মূল একাউন্ট)\n"
+        f"• <b>বর্তমান অবস্থা:</b> {st_text}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <b>নিয়মাবলী:</b>\n"
-        f"• মূল একাউন্ট <code>{main_u}</code> সার্বক্ষণিক সক্রিয় থেকে স্বাভাবিকভাবে চলবে।\n"
-        f"• নতুন সাব-একাউন্ট যুক্ত করলে বট স্বয়ংক্রিয়ভাবে অদলবদল (Round-Robin) করে ডাটা চেক করবে, যাতে কোনো সার্ভার রেট-লিমিট বা ব্লক না আসে।\n\n"
-        f"<i>নতুন একাউন্ট যোগ করতে বা কোনো সাব-একাউন্ট পরিচালনা করতে নিচের বাটনে চাপুন:</i>"
+        f"💡 <b>সতর্কবার্তা:</b> এই একাউন্টটি শুধুমাত্র বটের জন্য নিবেদিত। এটি ব্রাউজারে লগইন করলে সেশন কেটে গিয়ে বিলম্ব হতে পারে।"
     )
     
     keyboard = [
         [
-            InlineKeyboardButton("➕ নতুন একাউন্ট যোগ", callback_data="prompt_add_account"),
-            InlineKeyboardButton("🔄 স্ট্যাটাস রিফ্রেশ", callback_data="refresh_accounts_view")
+            InlineKeyboardButton("🔄 স্ট্যাটাস রিফ্রেশ", callback_data="refresh_accounts_view"),
+            InlineKeyboardButton("🔑 রি-লগইন", callback_data=f"relogin_acc_{main_u}")
+        ],
+        [
+            InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
         ]
     ]
-    
-    if secondary_accounts:
-        sec_buttons = []
-        for sec_u in secondary_accounts:
-            sec_buttons.append(InlineKeyboardButton(f"🔄 রি-লগইন: {sec_u}", callback_data=f"relogin_acc_{sec_u}"))
-        keyboard.append(sec_buttons)
-        keyboard.append([InlineKeyboardButton("➖ সাব-একাউন্ট রিমুভ (Remove)", callback_data="menu_del_account")])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")])
     return text, InlineKeyboardMarkup(keyboard)
 
 # --- Safe Helpers for Callbacks ---
@@ -763,72 +735,6 @@ async def accounts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, keyboard = render_accounts_menu()
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-async def add_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update):
-        return
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ <b>ব্যবহার করার নিয়ম:</b>\n"
-            "<code>/add_account &lt;username&gt; &lt;password&gt;</code>\n"
-            "উদাহরণ: <code>/add_account User_FD Pass123@#</code>",
-            parse_mode="HTML"
-        )
-        return
-    u = context.args[0].strip()
-    p = context.args[1].strip()
-    
-    if any(a.get("username") == u for a in config.get("accounts", [])):
-        await update.message.reply_text(f"⚠️ একাউন্ট <code>{u}</code> ইতিমধ্যে তালিকায় রয়েছে!", parse_mode="HTML")
-        return
-
-    wait_msg = await update.message.reply_text(f"🔄 একাউন্ট <code>{u}</code> লগইন টেস্ট করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...", parse_mode="HTML")
-    test_client = FlexSMSClient(config.get("base_url"), u, p)
-    success = await asyncio.to_thread(test_client.login)
-    if success:
-        config["accounts"].append({"username": u, "password": p})
-        scraper.update_accounts(config["accounts"])
-        save_config(config)
-        try:
-            threading.Thread(target=sync_cloud_store, daemon=True).start()
-        except Exception:
-            pass
-        text_menu, kb = render_accounts_menu()
-        await wait_msg.edit_text(
-            f"✅ <b>অভিনন্দন!</b> একাউন্ট <code>{u}</code> সফলভাবে লগইন হয়েছে এবং পুল-এ যুক্ত করা হয়েছে!\n\n" + text_menu,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-    else:
-        await wait_msg.edit_text(f"❌ লগইন ব্যর্থ হয়েছে! দয়া করে ইউজারনেম ও পাসওয়ার্ড সঠিক কিনা যাচাই করুন।", parse_mode="HTML")
-
-async def del_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_auth(update):
-        return
-    if not context.args:
-        await update.message.reply_text("❌ <b>ব্যবহার করার নিয়ম:</b> <code>/del_account &lt;username&gt;</code>", parse_mode="HTML")
-        return
-    target_u = context.args[0].strip()
-    main_u = config.get("username", "Atiar59_FD").strip()
-    if target_u.lower() == main_u.lower():
-        await update.message.reply_text("⛔ মূল একাউন্ট ডিলিট করা যাবে না!", parse_mode="HTML")
-        return
-    accounts = config.get("accounts", [])
-    if not any(a.get("username").lower() == target_u.lower() for a in accounts):
-        await update.message.reply_text(f"❌ সাব-একাউন্ট <code>{target_u}</code> তালিকায় নেই!", parse_mode="HTML")
-        return
-    config["accounts"] = [a for a in accounts if a.get("username").lower() != target_u.lower()]
-    scraper.update_accounts(config["accounts"])
-    save_config(config)
-    try:
-        threading.Thread(target=sync_cloud_store, daemon=True).start()
-    except Exception:
-        pass
-    text_menu, kb = render_accounts_menu()
-    await update.message.reply_text(
-        f"🗑 সাব-একাউন্ট <code>{target_u}</code> সফলভাবে রিমুভ করা হয়েছে!\n\n" + text_menu,
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
 
 async def admins_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
@@ -1086,57 +992,6 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return
 
-    if state == "add_account":
-        if text.lower() in ["cancel", "বাতিল"]:
-            context.user_data["awaiting"] = None
-            text_menu, kb = render_accounts_menu()
-            await update.message.reply_text("❌ বাতিল করা হয়েছে।", reply_markup=kb)
-            return
-
-        parts = text.split()
-        if len(parts) < 2:
-            await update.message.reply_text(
-                "❌ দয়া করে ইউজারনেম এবং পাসওয়ার্ড স্পেস দিয়ে আলাদা করে পাঠান!\n"
-                "উদাহরণ: <code>User_FD Pass123@#</code>\n"
-                "বাতিল করতে 'cancel' লিখুন।",
-                parse_mode="HTML"
-            )
-            return
-
-        u = parts[0].strip()
-        p = parts[1].strip()
-
-        if any(a.get("username") == u for a in config.get("accounts", [])):
-            context.user_data["awaiting"] = None
-            await update.message.reply_text(f"⚠️ একাউন্ট <code>{u}</code> ইতিমধ্যে যুক্ত আছে!", reply_markup=get_persistent_keyboard(), parse_mode="HTML")
-            return
-
-        wait_msg = await update.message.reply_text(f"🔄 একাউন্ট <code>{u}</code> লগইন টেস্ট করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...", parse_mode="HTML")
-        test_client = FlexSMSClient(config.get("base_url"), u, p)
-        success = await asyncio.to_thread(test_client.login)
-        
-        if success:
-            config["accounts"].append({"username": u, "password": p})
-            scraper.update_accounts(config["accounts"])
-            save_config(config)
-            try:
-                threading.Thread(target=sync_cloud_store, daemon=True).start()
-            except Exception:
-                pass
-            context.user_data["awaiting"] = None
-            text_menu, kb = render_accounts_menu()
-            await wait_msg.edit_text(
-                f"✅ <b>অভিনন্দন!</b> একাউন্ট <code>{u}</code> সফলভাবে লগইন হয়েছে এবং পুল-এ যুক্ত হয়েছে!\n\n" + text_menu,
-                reply_markup=kb,
-                parse_mode="HTML"
-            )
-        else:
-            await wait_msg.edit_text(
-                f"❌ একাউন্ট <code>{u}</code> লগইন ব্যর্থ হয়েছে! ইউজারনেম বা পাসওয়ার্ড ভুল অথবা ক্যাপচা সমস্যা হতে পারে।\n"
-                f"অনুগ্রহ করে পুনরায় সঠিক তথ্য দিয়ে চেষ্টা করুন অথবা 'cancel' লিখুন।",
-                parse_mode="HTML"
-            )
-        return
 
     # Permanent Reply Keyboard Taps
     if "কপি নাম্বার" in text or "সংগৃহীত নাম্বার" in text or text in ["/numbers", "/copy"]:
@@ -1267,22 +1122,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
-        elif data == "prompt_add_account":
-            await safe_answer(query)
-            context.user_data["awaiting"] = "add_account"
-            keyboard = [[InlineKeyboardButton("🔙 বাতিল করুন (Cancel)", callback_data="menu_accounts")]]
-            await safe_edit_message(
-                query,
-                "➕ <b>নতুন পোর্টাল একাউন্ট যোগ করুন:</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                "দয়া করে একাউন্টের <b>Username</b> এবং <b>Password</b> একটি স্পেস দিয়ে লিখে এই চ্যাটে পাঠান:\n\n"
-                "<code>&lt;username&gt; &lt;password&gt;</code>\n"
-                "উদাহরণ: <code>User_FD Pass123@#</code>\n\n"
-                "<i>(অথবা বাতিল করতে 'cancel' লিখুন)</i>",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-
         elif data == "refresh_accounts_view":
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
@@ -1296,44 +1135,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_answer(query, f"✅ {sec_u} লগইন সফল হয়েছে!", show_alert=True)
             else:
                 await safe_answer(query, f"❌ {sec_u} লগইন ব্যর্থ হয়েছে! পাসওয়ার্ড বা ক্যাপচা চেক করুন।", show_alert=True)
-            text, keyboard = render_accounts_menu()
-            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
-
-        elif data == "menu_del_account":
-            await safe_answer(query)
-            accounts = config.get("accounts", [])
-            main_u = config.get("username", "Atiar59_FD").strip()
-            removable = [a for a in accounts if a.get("username").lower() != main_u.lower()]
-            if not removable:
-                await safe_answer(query, "⚠️ কোনো সাব-একাউন্ট নেই! মূল একাউন্ট ডিলিট করা যাবে না।", show_alert=True)
-                return
-            keyboard = []
-            for acc in removable:
-                u = acc.get("username")
-                keyboard.append([InlineKeyboardButton(f"❌ Remove {u}", callback_data=f"del_account_{u}")])
-            keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="menu_accounts")])
-            await safe_edit_message(
-                query,
-                "➖ <b>যে সাব-একাউন্টটি সরাতে চান নির্বাচন করুন:</b>\n<i>(মূল একাউন্ট মোছা যাবে না)</i>",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="HTML"
-            )
-
-        elif data.startswith("del_account_"):
-            target_u = data[len("del_account_"):]
-            main_u = config.get("username", "Atiar59_FD").strip()
-            if target_u.lower() == main_u.lower():
-                await safe_answer(query, "⛔ মূল একাউন্ট ডিলিট করা যাবে না!", show_alert=True)
-                return
-            accounts = config.get("accounts", [])
-            config["accounts"] = [a for a in accounts if a.get("username").lower() != target_u.lower()]
-            scraper.update_accounts(config["accounts"])
-            save_config(config)
-            try:
-                threading.Thread(target=sync_cloud_store, daemon=True).start()
-            except Exception:
-                pass
-            await safe_answer(query, f"সাব-একাউন্ট {target_u} রিমুভ হয়েছে!", show_alert=True)
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
@@ -1718,9 +1519,8 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        acc_count = max(1, len(config.get("accounts", [])))
-        configured_interval = float(config.get("interval", 0.2 if acc_count >= 2 else 0.5))
-        safe_interval = max(0.2, configured_interval) if acc_count >= 2 else max(0.5, configured_interval)
+        configured_interval = float(config.get("interval", 0.3))
+        safe_interval = max(0.2, configured_interval)
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
@@ -1735,7 +1535,7 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "interval": config.get("interval", 0.2),
+        "interval": config.get("interval", 0.3),
         "accounts_count": len(config.get("accounts", [])),
         "accounts_status": scraper.get_accounts_status(),
         "collected_numbers_count": len(active_nums),
@@ -1776,8 +1576,6 @@ def main():
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler(["numbers", "copy"], numbers_command))
     app.add_handler(CommandHandler("accounts", accounts_command))
-    app.add_handler(CommandHandler("add_account", add_account_command))
-    app.add_handler(CommandHandler("del_account", del_account_command))
     app.add_handler(CommandHandler("admins", admins_command))
     app.add_handler(CommandHandler("add_admin", add_admin_command))
     app.add_handler(CommandHandler("del_admin", del_admin_command))
