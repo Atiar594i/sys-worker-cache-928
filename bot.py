@@ -38,6 +38,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("SMSMonitorBot")
 
+import collections
+recent_logs_buffer = collections.deque(maxlen=200)
+
+class WebLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            recent_logs_buffer.append(self.format(record))
+        except Exception:
+            pass
+
+web_log_handler = WebLogHandler()
+web_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(web_log_handler)
+
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 SUPER_ADMIN_ID = 5597944494
 BOT_STARTUP_TIME = datetime.now(timezone.utc)
@@ -1647,6 +1661,14 @@ async def process_sms_check(app):
 async def background_monitoring_loop(app):
     logger.info("Initializing background monitoring loop...")
     
+    # 0. Pre-authenticate all pool accounts in parallel:
+    try:
+        logger.info("Pre-authenticating all accounts in pool...")
+        login_res = await asyncio.to_thread(scraper.login_all)
+        logger.info(f"Pool pre-authentication results: {login_res}")
+    except Exception as e:
+        logger.error(f"Error during pool pre-authentication: {e}")
+
     # 1. Pre-seed today's records and numbers on startup:
     try:
         keywords = config.get("keywords", [])
@@ -1712,17 +1734,22 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "interval": config.get("interval", 1.5),
+        "interval": config.get("interval", 0.5),
         "accounts_count": len(config.get("accounts", [])),
+        "accounts_status": scraper.get_accounts_status(),
         "collected_numbers_count": len(active_nums),
         "consumed_numbers_count": len(config.get("consumed_numbers", []))
     })
+
+async def handle_logs(request):
+    return web.Response(text="\n".join(recent_logs_buffer), content_type="text/plain; charset=utf-8")
 
 async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     server_app = web.Application()
     server_app.router.add_get("/", handle_health_check)
     server_app.router.add_get("/health", handle_health_check)
+    server_app.router.add_get("/logs", handle_logs)
     runner = web.AppRunner(server_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

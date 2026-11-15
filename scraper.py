@@ -137,19 +137,18 @@ class FlexSMSClient:
             logger.info(f"User {self.username} is in rate-limit cooldown. Skipping...")
             return None
 
-        # Check if login is needed
-        if not self.is_logged_in or not self.ajax_url:
-            logger.info(f"Login triggered for user {self.username}.")
-            if not self.login():
-                return None
-
         # Check if date rolled over (midnight UTC)
         if self.current_date != now_date_str:
-            logger.info(f"Date rolled over from {self.current_date} to {now_date_str}. Performing fresh login for new date...")
+            logger.info(f"Date rolled over from {self.current_date} to {now_date_str}. Marking unauthenticated.")
             self.current_date = now_date_str
             self.is_logged_in = False
-            if not self.login():
-                return None
+            self.ajax_url = None
+            return None
+
+        # Check if login is needed
+        if not self.is_logged_in or not self.ajax_url:
+            logger.info(f"Account {self.username} is not ready yet. Skipping for background login.")
+            return None
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
@@ -185,11 +184,10 @@ class FlexSMSClient:
 
             # Check for session expiration indicators
             if res.status_code != 200 or "Direct Script Access Not Allowed" in res.text or "<!DOCTYPE html>" in res.text:
-                logger.warning(f"Session expired for {self.username}. Re-logging in...")
-                if self.login():
-                    res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=12)
-                else:
-                    return None
+                logger.warning(f"Session expired for {self.username}. Marking unauthenticated for background login...")
+                self.is_logged_in = False
+                self.ajax_url = None
+                return None
             
             data = res.json()
             raw_rows = data.get('aaData', [])
@@ -282,33 +280,26 @@ class FlexSMSClientPool:
             return client.login()
         return False
 
+    def _background_login(self, client):
+        try:
+            logger.info(f"Starting non-blocking background login for {client.username}...")
+            client.login()
+        except Exception as e:
+            logger.error(f"Background login error for {client.username}: {e}")
+        finally:
+            client._is_logging_in = False
+
     def login_all(self):
         with self.lock:
-            client_items = list(self.clients.items())
-        results = {}
-        for u, client in client_items:
-            results[u] = client.login()
-        return results
-
-    def get_available_client(self, min_rest=0.8):
-        with self.lock:
-            now = time.time()
-            available = [
-                c for c in self.clients.values()
-                if not getattr(c, 'is_busy', False)
-                and c.rate_limited_until <= now
-                and (now - getattr(c, 'last_finish', 0.0)) >= min_rest
-            ]
-            if not available:
-                return None
-            best = min(available, key=lambda c: getattr(c, 'last_finish', 0.0))
-            best.is_busy = True
-            return best
-
-    def release_client(self, client):
-        with self.lock:
-            client.is_busy = False
-            client.last_finish = time.time()
+            client_items = list(self.clients.values())
+        threads = []
+        for client in client_items:
+            t = threading.Thread(target=client.login, daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join(timeout=15)
+        return {c.username: c.is_logged_in for c in client_items}
 
     def fetch_records(self, keyword="", display_length=15):
         with self.lock:
@@ -316,11 +307,27 @@ class FlexSMSClientPool:
                 return None
             
             now = time.time()
-            available = [c for c in self.clients.values() if c.rate_limited_until <= now]
-            if not available:
-                available = list(self.clients.values())
+            # 1. Filter for healthy, already authenticated clients
+            ready_clients = [
+                c for c in self.clients.values()
+                if c.is_logged_in and c.ajax_url and c.rate_limited_until <= now
+            ]
 
-            self.current_idx = (self.current_idx + 1) % len(available)
-            chosen_client = available[self.current_idx]
+            # 2. Trigger non-blocking background login for any account not ready
+            for c in self.clients.values():
+                if (not c.is_logged_in or not c.ajax_url) and not getattr(c, '_is_logging_in', False):
+                    c._is_logging_in = True
+                    threading.Thread(target=self._background_login, args=(c,), daemon=True).start()
+
+            # 3. Strictly use ready clients so the loop never blocks or delays
+            if ready_clients:
+                self.current_idx = (self.current_idx + 1) % len(ready_clients)
+                chosen_client = ready_clients[self.current_idx]
+            else:
+                available = [c for c in self.clients.values() if c.rate_limited_until <= now] or list(self.clients.values())
+                self.current_idx = (self.current_idx + 1) % len(available)
+                chosen_client = available[self.current_idx]
+                if not chosen_client.is_logged_in:
+                    chosen_client.login()
 
         return chosen_client.fetch_records(keyword=keyword, display_length=display_length)
