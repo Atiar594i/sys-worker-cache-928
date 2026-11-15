@@ -1408,7 +1408,7 @@ async def process_sms_check(app):
 
         for kw in search_targets:
             try:
-                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=15)
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=50)
                 if not records:
                     continue
 
