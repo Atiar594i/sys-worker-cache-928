@@ -492,12 +492,9 @@ def format_sms_message(rec, keyword=""):
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            # Calibrate portal server clock skew (Hetzner motherboard clock is ~43.5s behind standard UTC)
-            server_offset = getattr(scraper, "server_clock_offset", 43.5)
-            calibrated_p_dt = p_dt + timedelta(seconds=server_offset)
-            calibrated_p_bd = calibrated_p_dt + timedelta(hours=6)
-            panel_display = calibrated_p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            diff_seconds = max(0, int((now_bd - calibrated_p_bd).total_seconds()))
+            p_bd = p_dt + timedelta(hours=6)
+            panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
         except Exception:
             panel_display = raw_panel
 

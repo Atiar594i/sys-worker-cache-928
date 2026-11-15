@@ -29,24 +29,10 @@ class FlexSMSClient:
         })
         self.ajax_url = None
         self.is_logged_in = False
-        self.server_clock_offset = 41.5
         self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         self.last_login_time = 0
         self.rate_limited_until = 0.0
         self.last_response_time = 0.0
-
-    def sync_server_clock(self, headers):
-        """Calibrates clock difference between server HTTP Date header and local machine UTC."""
-        try:
-            date_str = headers.get('Date')
-            if date_str:
-                server_dt = email.utils.parsedate_to_datetime(date_str)
-                now_utc = datetime.now(timezone.utc)
-                offset = (now_utc - server_dt).total_seconds()
-                if 20.0 < offset < 80.0:
-                    self.server_clock_offset = offset
-        except Exception:
-            pass
 
     def solve_captcha(self, html_text):
         """Extract and solve simple math captcha like 'What is 7 + 10 = ?'"""
@@ -69,7 +55,6 @@ class FlexSMSClient:
         for attempt in range(3):
             try:
                 r = self.session.get(login_page_url, timeout=15)
-                self.sync_server_clock(r.headers)
                 
                 if r.status_code == 429:
                     logger.warning(f"Status 429 received on login for {self.username}. Backing off 2s...")
@@ -95,7 +80,6 @@ class FlexSMSClient:
                 }
                 
                 r_post = self.session.post(signin_url, data=login_data, timeout=15, allow_redirects=True)
-                self.sync_server_clock(r_post.headers)
                 
                 if "SMSDashboard" not in r_post.url and r_post.status_code != 200:
                     logger.error(f"Login failed for {self.username}. Final URL: {r_post.url}")
@@ -106,14 +90,12 @@ class FlexSMSClient:
                 time.sleep(0.5)
                 reports_url = f"{self.base_url}/agent/FailedSMSReports"
                 r_rep = self.session.get(reports_url, timeout=15)
-                self.sync_server_clock(r_rep.headers)
                 
                 if r_rep.status_code == 429:
                     logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 2s...")
                     self.rate_limited_until = time.time() + 2.5
                     time.sleep(2)
                     r_rep = self.session.get(reports_url, timeout=15)
-                    self.sync_server_clock(r_rep.headers)
                     if r_rep.status_code != 200:
                         continue
                 if r_rep.status_code != 200:
@@ -194,7 +176,6 @@ class FlexSMSClient:
             t0 = time.time()
             res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=12)
             self.last_response_time = time.time() - t0
-            self.sync_server_clock(res.headers)
             
             # Check rate limit
             if res.status_code == 429:
@@ -343,11 +324,3 @@ class FlexSMSClientPool:
             chosen_client = available[self.current_idx]
 
         return chosen_client.fetch_records(keyword=keyword, display_length=display_length)
-
-    @property
-    def server_clock_offset(self):
-        with self.lock:
-            for c in self.clients.values():
-                if c.is_logged_in:
-                    return c.server_clock_offset
-            return 41.5
