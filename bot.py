@@ -1561,10 +1561,13 @@ async def post_init(application):
     logger.info("Persistent store restored. Background monitor & Render web server successfully scheduled.")
 
 def main():
-    token = config.get("bot_token")
-    if not token:
-        print("Bot token not configured!")
-        sys.exit(1)
+    if os.environ.get("BOT_DISABLED") == "true":
+        logger.info("Bot is disabled via BOT_DISABLED=true. Exiting process.")
+        sys.exit(0)
+    token = os.environ.get("BOT_TOKEN") or config.get("bot_token")
+    if not token or token == "DISABLED":
+        logger.info("Bot token disabled or not configured. Exiting process.")
+        sys.exit(0)
 
     app = ApplicationBuilder().token(token).post_init(post_init).build()
 
