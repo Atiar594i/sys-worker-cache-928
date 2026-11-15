@@ -495,29 +495,22 @@ def format_sms_message(rec, keyword=""):
     now_utc = datetime.now(timezone.utc)
     bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
-    panel_display = raw_panel
+    panel_display = raw_panel if raw_panel else bot_delivery_time
     diff_seconds = 1
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             raw_diff = max(0, int((now_utc - p_dt).total_seconds()))
-            if 1 <= raw_diff <= 3:
-                diff_seconds = raw_diff
-                panel_display = raw_panel
-            else:
-                diff_seconds = 1 if (now_utc.second % 2 == 0) else 2
-                panel_dt = now_utc - timedelta(seconds=diff_seconds)
-                panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
+            diff_seconds = raw_diff
         except Exception:
             diff_seconds = 1
-            panel_dt = now_utc - timedelta(seconds=1)
-            panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
     else:
         diff_seconds = 1
-        panel_dt = now_utc - timedelta(seconds=1)
-        panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    latency_str = f"{diff_seconds}s (Instant ⚡)"
+    if diff_seconds <= 3:
+        latency_str = f"{diff_seconds}s (Instant ⚡)"
+    else:
+        latency_str = f"{diff_seconds}s"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
