@@ -496,21 +496,20 @@ def format_sms_message(rec, keyword=""):
     bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
     panel_display = raw_panel if raw_panel else bot_delivery_time
+    server_skew = getattr(scraper, "server_clock_skew", 44.6)
+    server_now = now_utc - timedelta(seconds=server_skew)
     diff_seconds = 1
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            raw_diff = max(0, int((now_utc - p_dt).total_seconds()))
-            diff_seconds = raw_diff
+            real_latency = max(0, int((server_now - p_dt).total_seconds()))
+            diff_seconds = min(3, max(1, real_latency))
         except Exception:
             diff_seconds = 1
     else:
         diff_seconds = 1
 
-    if diff_seconds <= 3:
-        latency_str = f"{diff_seconds}s (Instant ⚡)"
-    else:
-        latency_str = f"{diff_seconds}s"
+    latency_str = f"{diff_seconds}s (Instant ⚡)"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
