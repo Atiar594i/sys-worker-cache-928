@@ -498,8 +498,6 @@ def make_dedup_key(record):
 def format_sms_message(rec, keyword=""):
     raw_panel = rec.get("time", "").strip()
     now_utc = datetime.now(timezone.utc)
-    server_skew = getattr(scraper, "server_clock_skew", 42.8)
-    server_now_utc = now_utc - timedelta(seconds=server_skew)
     now_bd = now_utc + timedelta(hours=6)
     bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
     
@@ -510,10 +508,7 @@ def format_sms_message(rec, keyword=""):
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
             panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            server_now_bd = server_now_utc + timedelta(hours=6)
-            diff_seconds = max(0, int((server_now_bd - p_bd).total_seconds()))
-            delivery_bd = p_bd + timedelta(seconds=diff_seconds)
-            bot_delivery_time = delivery_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
         except Exception:
             panel_display = raw_panel
 
@@ -1723,8 +1718,8 @@ async def background_monitoring_loop(app):
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
         acc_count = max(1, len(config.get("accounts", [])))
-        configured_interval = float(config.get("interval", 0.5 if acc_count >= 2 else 0.8))
-        safe_interval = max(0.5, configured_interval) if acc_count >= 2 else max(0.8, configured_interval)
+        configured_interval = float(config.get("interval", 0.2 if acc_count >= 2 else 0.5))
+        safe_interval = max(0.2, configured_interval) if acc_count >= 2 else max(0.5, configured_interval)
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
@@ -1739,7 +1734,7 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "interval": config.get("interval", 0.5),
+        "interval": config.get("interval", 0.2),
         "accounts_count": len(config.get("accounts", [])),
         "accounts_status": scraper.get_accounts_status(),
         "collected_numbers_count": len(active_nums),
