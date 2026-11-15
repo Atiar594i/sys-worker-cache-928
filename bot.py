@@ -1742,7 +1742,7 @@ async def handle_health_check(request):
     })
 
 async def handle_logs(request):
-    return web.Response(text="\n".join(recent_logs_buffer), content_type="text/plain; charset=utf-8")
+    return web.Response(text="\n".join(recent_logs_buffer), content_type="text/plain", charset="utf-8")
 
 async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
