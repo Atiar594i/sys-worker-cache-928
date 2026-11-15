@@ -493,31 +493,29 @@ def make_dedup_key(record):
 def format_sms_message(rec, keyword=""):
     raw_panel = rec.get("time", "").strip()
     now_utc = datetime.now(timezone.utc)
-    now_bd = now_utc + timedelta(hours=6)
-    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+    bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
     panel_display = raw_panel
     diff_seconds = 1
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            p_bd = p_dt + timedelta(hours=6)
-            raw_diff = max(0, int((now_bd - p_bd).total_seconds()))
+            raw_diff = max(0, int((now_utc - p_dt).total_seconds()))
             if 1 <= raw_diff <= 3:
                 diff_seconds = raw_diff
-                panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+                panel_display = raw_panel
             else:
-                diff_seconds = 1 if (now_bd.second % 2 == 0) else 2
-                panel_dt = now_bd - timedelta(seconds=diff_seconds)
-                panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+                diff_seconds = 1 if (now_utc.second % 2 == 0) else 2
+                panel_dt = now_utc - timedelta(seconds=diff_seconds)
+                panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             diff_seconds = 1
-            panel_dt = now_bd - timedelta(seconds=1)
-            panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+            panel_dt = now_utc - timedelta(seconds=1)
+            panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
     else:
         diff_seconds = 1
-        panel_dt = now_bd - timedelta(seconds=1)
-        panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+        panel_dt = now_utc - timedelta(seconds=1)
+        panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     latency_str = f"{diff_seconds}s (Instant ⚡)"
         
