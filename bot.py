@@ -1695,7 +1695,10 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        await asyncio.sleep(1.0)
+        acc_count = max(1, len(config.get("accounts", [])))
+        configured_interval = float(config.get("interval", 0.5 if acc_count >= 2 else 0.8))
+        safe_interval = max(0.5, configured_interval) if acc_count >= 2 else max(0.8, configured_interval)
+        await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
