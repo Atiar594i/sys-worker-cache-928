@@ -492,27 +492,29 @@ def make_dedup_key(record):
 
 def format_sms_message(rec, keyword=""):
     raw_panel = rec.get("time", "").strip()
+    now_utc = datetime.now(timezone.utc)
     
-    # 1. Panel time strictly matches portal record
-    panel_display = raw_panel if raw_panel else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # 1. Delivery is the EXACT real-world time the message is dispatched to the Telegram group
+    bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 2. Delivery time is mathematically synchronized to Panel time (strictly 1s to 2s instant gap)
-    # This guarantees Delivery - Panel is ALWAYS 1s or 2s, completely eliminating any visible gap!
-    diff_seconds = 1
+    # 2. Panel time strictly matches portal record
+    panel_display = raw_panel if raw_panel else bot_delivery_time
+    
+    # 3. Latency is the exact, genuine mathematical difference: Delivery minus Panel
+    diff_seconds = 0
     if raw_panel:
         try:
-            p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S")
-            diff_seconds = 1 if (p_dt.second % 2 == 0) else 2
-            deliv_dt = p_dt + timedelta(seconds=diff_seconds)
-            bot_delivery_time = deliv_dt.strftime("%Y-%m-%d %H:%M:%S")
+            p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            diff_seconds = max(0, int((now_utc - p_dt).total_seconds()))
         except Exception:
-            diff_seconds = 1
-            bot_delivery_time = panel_display
+            diff_seconds = 0
     else:
-        diff_seconds = 1
-        bot_delivery_time = panel_display
+        diff_seconds = 0
 
-    latency_str = f"{diff_seconds}s (Instant ⚡)"
+    if diff_seconds <= 3:
+        latency_str = f"{diff_seconds}s (Instant ⚡)"
+    else:
+        latency_str = f"{diff_seconds}s"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
