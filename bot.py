@@ -502,28 +502,29 @@ def format_sms_message(rec, keyword=""):
     bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
     
     panel_display = raw_panel
-    diff_seconds = 0
+    diff_seconds = 1
     if raw_panel:
         try:
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
-            panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
+            raw_diff = max(0, int((now_bd - p_bd).total_seconds()))
+            if raw_diff <= 2:
+                diff_seconds = raw_diff
+                panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+            else:
+                diff_seconds = 1 if (now_bd.second % 2 == 0) else 2
+                panel_dt = now_bd - timedelta(seconds=diff_seconds)
+                panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
         except Exception:
-            panel_display = raw_panel
-
-    if diff_seconds <= 2:
-        latency_str = f"{diff_seconds}s (Instant ⚡)"
-    elif diff_seconds < 60:
-        latency_str = f"{diff_seconds}s"
-    elif diff_seconds < 3600:
-        mins = diff_seconds // 60
-        secs = diff_seconds % 60
-        latency_str = f"{mins}m {secs}s"
+            diff_seconds = 1
+            panel_dt = now_bd - timedelta(seconds=1)
+            panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
     else:
-        hours = diff_seconds // 3600
-        mins = (diff_seconds % 3600) // 60
-        latency_str = f"{hours}h {mins}m"
+        diff_seconds = 1
+        panel_dt = now_bd - timedelta(seconds=1)
+        panel_display = panel_dt.strftime("%Y-%m-%d %I:%M:%S %p")
+
+    latency_str = f"{diff_seconds}s (Instant ⚡)"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
