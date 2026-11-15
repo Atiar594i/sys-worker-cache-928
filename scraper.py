@@ -33,6 +33,7 @@ class FlexSMSClient:
         self.last_login_time = 0
         self.rate_limited_until = 0.0
         self.last_response_time = 0.0
+        self.server_clock_skew = 42.8
 
     def solve_captcha(self, html_text):
         """Extract and solve simple math captcha like 'What is 7 + 10 = ?'"""
@@ -175,6 +176,16 @@ class FlexSMSClient:
             t0 = time.time()
             res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=12)
             self.last_response_time = time.time() - t0
+            
+            date_str = res.headers.get('Date')
+            if date_str:
+                try:
+                    server_dt = email.utils.parsedate_to_datetime(date_str)
+                    skew = (datetime.now(timezone.utc) - server_dt).total_seconds()
+                    if 15.0 < skew < 90.0:
+                        self.server_clock_skew = skew
+                except Exception:
+                    pass
             
             # Check rate limit
             if res.status_code == 429:
@@ -331,3 +342,11 @@ class FlexSMSClientPool:
                     chosen_client.login()
 
         return chosen_client.fetch_records(keyword=keyword, display_length=display_length)
+
+    @property
+    def server_clock_skew(self):
+        with self.lock:
+            for c in self.clients.values():
+                if getattr(c, 'server_clock_skew', None) is not None:
+                    return c.server_clock_skew
+        return 42.8

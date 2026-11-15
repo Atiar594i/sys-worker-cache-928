@@ -498,6 +498,8 @@ def make_dedup_key(record):
 def format_sms_message(rec, keyword=""):
     raw_panel = rec.get("time", "").strip()
     now_utc = datetime.now(timezone.utc)
+    server_skew = getattr(scraper, "server_clock_skew", 42.8)
+    server_now_utc = now_utc - timedelta(seconds=server_skew)
     now_bd = now_utc + timedelta(hours=6)
     bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
     
@@ -508,7 +510,10 @@ def format_sms_message(rec, keyword=""):
             p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             p_bd = p_dt + timedelta(hours=6)
             panel_display = p_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-            diff_seconds = max(0, int((now_bd - p_bd).total_seconds()))
+            server_now_bd = server_now_utc + timedelta(hours=6)
+            diff_seconds = max(0, int((server_now_bd - p_bd).total_seconds()))
+            delivery_bd = p_bd + timedelta(seconds=diff_seconds)
+            bot_delivery_time = delivery_bd.strftime("%Y-%m-%d %I:%M:%S %p")
         except Exception:
             panel_display = raw_panel
 
