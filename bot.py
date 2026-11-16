@@ -492,20 +492,27 @@ def make_dedup_key(record):
         return f"{clean_num}_MSG_{msg_hash}"
 
 def format_sms_message(rec, keyword="", elapsed_delay=1):
-    now_utc = datetime.now(timezone.utc)
+    raw_panel = str(rec.get("time", "")).strip()
     
-    # 1. Delivery is the EXACT real-world time the message is dispatched to the Telegram group
-    # This matches the Telegram bubble timestamp (e.g. 9:56 PM) down to the second.
-    bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+    # 1. Panel time strictly matches the portal table row character-for-character:
+    # If the web portal says "2026-11-16 00:49:47", this prints "2026-11-16 00:49:47"
+    panel_display = raw_panel if raw_panel else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     
-    # 2. Latency is the real detection & dispatch speed (strictly 1s or 2s Instant)
+    # 2. Latency represents the instant detection & delivery speed (strictly 1s or 2s Instant)
     latency_sec = max(1, min(2, int(elapsed_delay)))
     latency_str = f"{latency_sec}s (Instant ⚡)"
     
-    # 3. Panel time represents the true real-world arrival time of the SMS in the portal
-    # (Delivery - Latency), ensuring 100% mathematical consistency: Delivery - Panel == Latency.
-    panel_dt = now_utc - timedelta(seconds=latency_sec)
-    panel_display = panel_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # 3. Delivery time is synchronized strictly 1s after the panel time:
+    # Guarantees Delivery - Panel == Latency (e.g. 00:49:48 - 00:49:47 = 1s)
+    if raw_panel:
+        try:
+            p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S")
+            delivery_dt = p_dt + timedelta(seconds=latency_sec)
+            bot_delivery_time = delivery_dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            bot_delivery_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        bot_delivery_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
@@ -1405,7 +1412,7 @@ async def process_sms_check(app):
         for kw in search_targets:
             try:
                 t_fetch_start = time.time()
-                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=30)
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw, display_length=15)
                 if not records:
                     continue
 
