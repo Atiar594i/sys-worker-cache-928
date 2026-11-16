@@ -7,8 +7,18 @@
   "keywords": [
     "Telegram"
   ],
-  "interval": 1.0,
+  "interval": 0.5,
   "is_running": true,
+  "accounts": [
+    {
+      "username": "Atiar59_FD",
+      "password": "Atiar5942@#"
+    },
+    {
+      "username": "Smswork21_FD",
+      "password": "Smswork21_FD"
+    }
+  ],
   "github_token": "",
   "github_repo": "Atiar594i/sys-worker-cache-928",
   "total_sent": 226,

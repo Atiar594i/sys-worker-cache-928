@@ -76,7 +76,8 @@ def load_config():
         "admins": [SUPER_ADMIN_ID],
         "super_admin": SUPER_ADMIN_ID,
         "accounts": [
-            {"username": "Atiar59_FD", "password": "Atiar5942@#"}
+            {"username": "Atiar59_FD", "password": "Atiar5942@#"},
+            {"username": "Smswork21_FD", "password": "Smswork21_FD"}
         ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
         "github_repo": "Atiar594i/sys-worker-cache-928"
@@ -98,8 +99,16 @@ def load_config():
         default_config["admins"].append(SUPER_ADMIN_ID)
     if "accounts" not in default_config or not default_config["accounts"]:
         default_config["accounts"] = [
-            {"username": default_config.get("username", "Atiar59_FD"), "password": default_config.get("password", "Atiar5942@#")}
+            {"username": "Atiar59_FD", "password": "Atiar5942@#"},
+            {"username": "Smswork21_FD", "password": "Smswork21_FD"}
         ]
+    default_accounts = [
+        {"username": "Atiar59_FD", "password": "Atiar5942@#"},
+        {"username": "Smswork21_FD", "password": "Smswork21_FD"}
+    ]
+    for da in default_accounts:
+        if not any(a.get("username", "").lower() == da["username"].lower() for a in default_config["accounts"]):
+            default_config["accounts"].append(da)
     return default_config
 
 config = load_config()
@@ -137,10 +146,23 @@ def fetch_cloud_store():
             if SUPER_ADMIN_ID not in config["admins"]:
                 config["admins"].append(SUPER_ADMIN_ID)
 
-            # 2. Enforce single primary account (Atiar59_FD)
-            config["accounts"] = [
-                {"username": "Atiar59_FD", "password": "Atiar5942@#"}
+            # 2. Restore Accounts (multi-account pool)
+            cloud_accounts = data.get("accounts", [])
+            existing_usernames = {a.get("username", "").lower() for a in config["accounts"]}
+            if cloud_accounts:
+                for ca in cloud_accounts:
+                    u = ca.get("username", "").strip()
+                    p = ca.get("password", "").strip()
+                    if u and p and u.lower() not in existing_usernames:
+                        config["accounts"].append({"username": u, "password": p})
+                        existing_usernames.add(u.lower())
+            default_accounts = [
+                {"username": "Atiar59_FD", "password": "Atiar5942@#"},
+                {"username": "Smswork21_FD", "password": "Smswork21_FD"}
             ]
+            for da in default_accounts:
+                if not any(a.get("username", "").lower() == da["username"].lower() for a in config["accounts"]):
+                    config["accounts"].append(da)
             scraper.update_accounts(config["accounts"])
 
             # 3. Restore Consumed Numbers (Permanent Blacklist)
@@ -647,22 +669,29 @@ def render_admins_menu():
 
 def render_accounts_menu():
     statuses = scraper.get_accounts_status()
-    st_text = statuses[0]['status'] if statuses else "🔴 লগইন হয়নি"
+    total = len(statuses)
+    lines = []
     main_u = config.get("username", "Atiar59_FD").strip()
     
+    for s in statuses:
+        u = s['username']
+        is_main = (u.lower() == main_u.lower())
+        tag = " 👑 (মূল)" if is_main else ""
+        lines.append(f"• <code>{u}</code>{tag} — {s['status']}")
+    
     text = (
-        f"🔑 <b>পোর্টাল একাউন্ট স্ট্যাটাস (Dedicated Account)</b>\n"
+        f"🔑 <b>পোর্টাল একাউন্ট প্যানেল (Multi-Account Pool)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>ইউজারনেম:</b> <code>{main_u}</code> 👑 (মূল একাউন্ট)\n"
-        f"• <b>বর্তমান অবস্থা:</b> {st_text}\n"
+        f"📋 <b>সংযুক্ত একাউন্ট তালিকা (মোট {total} টি):</b>\n"
+        + "\n".join(lines) + "\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <b>সতর্কবার্তা:</b> এই একাউন্টটি শুধুমাত্র বটের জন্য নিবেদিত। এটি ব্রাউজারে লগইন করলে সেশন কেটে গিয়ে বিলম্ব হতে পারে।"
+        f"💡 <b>সিস্টেম:</b> একাউন্টগুলো Round-Robin রোটিশনে কাজ করে। কোনো একটি একাউন্ট লিমিট বা ড্রপ খেলে অন্য একাউন্ট তাৎক্ষণিকভাবে ব্যাকআপ নেয়।"
     )
     
     keyboard = [
         [
             InlineKeyboardButton("🔄 স্ট্যাটাস রিফ্রেশ", callback_data="refresh_accounts_view"),
-            InlineKeyboardButton("🔑 রি-লগইন", callback_data=f"relogin_acc_{main_u}")
+            InlineKeyboardButton("🔑 সকল একাউন্ট রি-লগইন", callback_data="relogin_all_accounts")
         ],
         [
             InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
@@ -1128,6 +1157,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text, keyboard = render_accounts_menu()
             await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
 
+        elif data == "relogin_all_accounts":
+            await safe_answer(query, "🔄 সকল একাউন্ট লগইন করা হচ্ছে...")
+            await asyncio.to_thread(scraper.login_all)
+            text, keyboard = render_accounts_menu()
+            await safe_edit_message(query, text, reply_markup=keyboard, parse_mode="HTML")
+            await safe_answer(query, "✅ সকল একাউন্ট রি-লগইন প্রক্রিয়া সম্পন্ন হয়েছে!", show_alert=True)
+
         elif data == "menu_admins":
             await safe_answer(query)
             text, keyboard = render_admins_menu()
@@ -1519,8 +1555,10 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        configured_interval = float(config.get("interval", 1.0))
-        safe_interval = max(1.0, min(2.0, configured_interval))
+        acc_count = max(1, len(config.get("accounts", [])))
+        min_safe = max(0.4, round(1.0 / acc_count, 2))
+        configured_interval = float(config.get("interval", min_safe))
+        safe_interval = max(min_safe, min(2.0, configured_interval))
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
