@@ -192,8 +192,8 @@ class FlexSMSClient:
             
             # Check rate limit
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 2.0s.")
-                self.rate_limited_until = time.time() + 2.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 3.0s.")
+                self.rate_limited_until = time.time() + 3.0
                 return None
 
             # Check for session expiration indicators
