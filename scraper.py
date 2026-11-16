@@ -16,9 +16,9 @@ class FlexSMSClient:
         self.password = password
         self.session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=10,
-            max_retries=1,
+            pool_connections=20,
+            pool_maxsize=20,
+            max_retries=0,
             pool_block=False
         )
         self.session.mount("http://", adapter)
@@ -60,24 +60,24 @@ class FlexSMSClient:
             login_page_url = f"{self.base_url}/login"
             signin_url = f"{self.base_url}/signin"
             
-            for attempt in range(3):
+            for attempt in range(2):
                 try:
-                    r = self.session.get(login_page_url, timeout=12)
+                    r = self.session.get(login_page_url, timeout=(3.0, 4.0))
                     
                     if r.status_code == 429:
-                        logger.warning(f"Status 429 received on login for {self.username}. Backing off 2s...")
-                        self.rate_limited_until = time.time() + 2.0
-                        time.sleep(2)
+                        logger.warning(f"Status 429 received on login for {self.username}. Backing off 0.5s...")
+                        self.rate_limited_until = time.time() + 0.5
+                        time.sleep(0.5)
                         continue
                     if r.status_code != 200:
                         logger.error(f"Failed to load login page. Status: {r.status_code}")
-                        time.sleep(1)
+                        time.sleep(0.3)
                         continue
 
                     captcha_ans = self.solve_captcha(r.text)
                     if captcha_ans is None:
                         logger.error("Could not parse captcha from login page!")
-                        time.sleep(1)
+                        time.sleep(0.3)
                         continue
 
                     logger.info(f"Captcha solved for {self.username}: {captcha_ans}")
@@ -87,34 +87,32 @@ class FlexSMSClient:
                         'capt': captcha_ans
                     }
                     
-                    r_post = self.session.post(signin_url, data=login_data, timeout=12, allow_redirects=True)
+                    r_post = self.session.post(signin_url, data=login_data, timeout=(3.0, 4.0), allow_redirects=True)
                     
                     if "SMSDashboard" not in r_post.url and r_post.status_code != 200:
                         logger.error(f"Login failed for {self.username}. Final URL: {r_post.url}")
-                        time.sleep(1)
+                        time.sleep(0.3)
                         continue
 
-                    # Brief pause before visiting FailedSMSReports
-                    time.sleep(0.3)
                     reports_url = f"{self.base_url}/agent/FailedSMSReports"
-                    r_rep = self.session.get(reports_url, timeout=12)
+                    r_rep = self.session.get(reports_url, timeout=(3.0, 4.0))
                     
                     if r_rep.status_code == 429:
-                        logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 2s...")
-                        self.rate_limited_until = time.time() + 2.0
-                        time.sleep(2)
-                        r_rep = self.session.get(reports_url, timeout=12)
+                        logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 0.5s...")
+                        self.rate_limited_until = time.time() + 0.5
+                        time.sleep(0.5)
+                        r_rep = self.session.get(reports_url, timeout=(3.0, 4.0))
                         if r_rep.status_code != 200:
                             continue
                     if r_rep.status_code != 200:
                         logger.error(f"Failed to load FailedSMSReports page. Status: {r_rep.status_code}")
-                        time.sleep(1)
+                        time.sleep(0.3)
                         continue
 
                     ajax_match = re.search(r'sAjaxSource":\s*"([^"]+)"', r_rep.text)
                     if not ajax_match:
                         logger.error("Could not find sAjaxSource in FailedSMSReports!")
-                        time.sleep(1)
+                        time.sleep(0.3)
                         continue
 
                     self.ajax_url = f"{self.base_url}/agent/{ajax_match.group(1)}"
@@ -127,7 +125,7 @@ class FlexSMSClient:
 
                 except Exception as e:
                     logger.error(f"Exception during login attempt {attempt+1} for {self.username}: {e}")
-                    time.sleep(1)
+                    time.sleep(0.3)
 
             self.is_logged_in = False
             return False
@@ -179,7 +177,7 @@ class FlexSMSClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=10)
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.0, 3.5))
             self.last_response_time = time.time() - t0
             
             date_str = res.headers.get('Date')

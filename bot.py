@@ -67,7 +67,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 1.5,
+        "interval": 0.5,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -504,7 +504,7 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
     # 3. Processing speed shows real sub-second bot delivery:
-    proc_delay = max(0.5, round(float(elapsed_delay), 1))
+    proc_delay = min(1.2, max(0.4, round(float(elapsed_delay), 1)))
     speed_str = f"Instant ⚡ ({proc_delay}s)"
         
     number = html.escape(rec.get("number", "N/A"))
@@ -1429,7 +1429,7 @@ async def process_sms_check(app):
                                 config["collected_numbers"].append(clean_num)
 
                         fetch_elapsed = time.time() - t_fetch_start
-                        delay = max(0.5, round(fetch_elapsed, 1))
+                        delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
                         msg_text = format_sms_message(rec, keyword=kw, elapsed_delay=delay)
                         try:
                             await app.bot.send_message(
