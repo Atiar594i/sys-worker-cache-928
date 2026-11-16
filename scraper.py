@@ -194,10 +194,10 @@ class FlexSMSClient:
                 except Exception:
                     pass
             
-            # Check rate limit
+            # Check rate limit — short 5s per-account cooldown so the pool stays alive
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 15.0s.")
-                self.rate_limited_until = time.time() + 15.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 5.0s.")
+                self.rate_limited_until = time.time() + 5.0
                 return None
 
             # Check for session expiration indicators
@@ -336,10 +336,9 @@ class FlexSMSClientPool:
             if not self.clients:
                 return None
             now = time.time()
-            if self.pool_rate_limited_until > now:
-                return None
             n = len(self.clients)
             chosen = None
+            # Always try every client in round-robin: skip only if rate-limited
             for i in range(n):
                 idx = (self.current_idx + i) % n
                 c = self.clients[idx]
@@ -349,17 +348,31 @@ class FlexSMSClientPool:
                     break
 
             if not chosen:
-                chosen = self.clients[self.current_idx]
-                self.current_idx = (self.current_idx + 1) % n
+                # All clients rate-limited — pick the one whose cooldown expires soonest
+                soonest = min(self.clients, key=lambda c: c.rate_limited_until)
+                wait = max(0.0, soonest.rate_limited_until - now)
+                if wait > 0:
+                    logger.warning(f"All accounts rate-limited. Waiting {wait:.1f}s for {soonest.username}...")
+                    time.sleep(wait)
+                chosen = soonest
+                with self.lock:
+                    self.current_idx = (self.clients.index(chosen) + 1) % n
 
         recs = chosen.fetch_records(keyword=keyword, display_length=display_length)
         if recs is not None:
             return recs
         
-        # If rate limited, set pool cooldown so the whole IP cools down:
+        # If rate limited, try the next available client immediately (don't halt the pool):
         if chosen.rate_limited_until > time.time():
             with self.lock:
-                self.pool_rate_limited_until = chosen.rate_limited_until
+                clients = list(self.clients)
+            now = time.time()
+            for c in clients:
+                if c is not chosen and c.rate_limited_until <= now:
+                    logger.info(f"Failover: switching from {chosen.username} to {c.username}")
+                    recs2 = c.fetch_records(keyword=keyword, display_length=display_length)
+                    if recs2 is not None:
+                        return recs2
             return None
 
         # Quick re-auth if session dropped:

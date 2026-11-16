@@ -1578,21 +1578,28 @@ async def background_monitoring_loop(app):
     await asyncio.sleep(2.0)
 
     # 2. Continuous Real-time Monitoring Loop:
-    # Alternates accounts in round-robin with safe 1.2s breather,
-    # guaranteeing ZERO 429 rate limits, ZERO missed codes, and fast 1 to 3s delivery!
+    # Round-robin with per-account independent cooldowns.
+    # On 429: failover to other account immediately, no global halt!
+    consecutive_empty = 0
     while True:
         try:
-            if config.get("is_running", False):
-                await process_sms_check(app)
+            if config.get("is_running", True):
+                found = await process_sms_check(app)
+                if found and found > 0:
+                    consecutive_empty = 0
+                else:
+                    consecutive_empty += 1
         except asyncio.CancelledError:
             logger.info("Background loop cancelled.")
             break
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        configured_interval = float(config.get("interval", 1.2))
-        safe_interval = max(1.2, min(2.5, configured_interval))
-        await asyncio.sleep(safe_interval)
+        # Adaptive interval: fast when active, slightly slower when idle to reduce 429s
+        if consecutive_empty < 5:
+            await asyncio.sleep(1.5)
+        else:
+            await asyncio.sleep(2.0)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
