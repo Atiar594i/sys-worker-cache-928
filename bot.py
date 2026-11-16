@@ -522,12 +522,29 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     panel_display = raw_panel if raw_panel else now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
     # 2. Delivery is the EXACT real-world time the message is dispatched to the Telegram group:
-    # This matches the Telegram bubble timestamp (e.g. 7:06 AM) down to the exact second.
+    # This matches the Telegram bubble timestamp down to the exact second.
     bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 3. Processing speed shows real sub-second bot delivery:
-    proc_delay = min(1.2, max(0.4, round(float(elapsed_delay), 1)))
-    speed_str = f"Instant ⚡ ({proc_delay}s)"
+    # 3. Calculate true mathematical difference between Panel Time and Delivery Time:
+    panel_sec_diff = None
+    if raw_panel:
+        try:
+            panel_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            panel_sec_diff = int((now_utc - panel_dt).total_seconds())
+        except Exception:
+            pass
+
+    if panel_sec_diff is not None and panel_sec_diff >= 0:
+        actual_delay = panel_sec_diff
+    else:
+        actual_delay = max(1, int(round(float(elapsed_delay))))
+
+    if actual_delay <= 5:
+        speed_str = f"Instant ⚡ ({actual_delay}s)"
+    elif actual_delay <= 15:
+        speed_str = f"Fast 🚀 ({actual_delay}s)"
+    else:
+        speed_str = f"Normal ⏱️ ({actual_delay}s)"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
@@ -1497,6 +1514,7 @@ async def background_monitoring_loop(app):
         logger.info("Pre-authenticating all accounts in pool...")
         login_res = await asyncio.to_thread(scraper.login_all)
         logger.info(f"Pool pre-authentication results: {login_res}")
+        await asyncio.sleep(2.0)
     except Exception as e:
         logger.error(f"Error during pool pre-authentication: {e}")
 
@@ -1542,8 +1560,10 @@ async def background_monitoring_loop(app):
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
 
+    await asyncio.sleep(2.0)
+
     # 2. Continuous Real-time Monitoring Loop:
-    # Alternates accounts in round-robin with safe 0.8s breather,
+    # Alternates accounts in round-robin with safe 1.2s breather,
     # guaranteeing ZERO 429 rate limits, ZERO missed codes, and fast 1 to 3s delivery!
     while True:
         try:
@@ -1555,8 +1575,8 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        configured_interval = float(config.get("interval", 1.5))
-        safe_interval = max(1.5, min(2.5, configured_interval))
+        configured_interval = float(config.get("interval", 1.2))
+        safe_interval = max(1.2, min(2.5, configured_interval))
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):

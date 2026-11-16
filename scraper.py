@@ -34,6 +34,7 @@ class FlexSMSClient:
         self.rate_limited_until = 0.0
         self.last_response_time = 0.0
         self.server_clock_skew = 42.8
+        self.echo_counter = 0
         self.login_lock = threading.Lock()
 
     def solve_captcha(self, html_text):
@@ -156,15 +157,17 @@ class FlexSMSClient:
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Referer': f"{self.base_url}/agent/FailedSMSReports"
         }
         
+        self.echo_counter += 1
         params = {
-            'sEcho': 1,
-            'iDisplayStart': 0,
-            'iDisplayLength': display_length,
-            'iSortingCols': 1,
-            'iSortCol_0': 0,
+            'sEcho': str(self.echo_counter),
+            'iDisplayStart': '0',
+            'iDisplayLength': str(display_length),
+            'iSortingCols': '1',
+            'iSortCol_0': '0',
             'sSortDir_0': 'desc',
             'bSortable_0': 'true',
             'bSearchable_0': 'true',
@@ -172,7 +175,8 @@ class FlexSMSClient:
             'bSearchable_2': 'true',
             'bSearchable_3': 'true',
             'bSearchable_4': 'true',
-            'sSearch': keyword.strip() if keyword else ''
+            'sSearch': keyword.strip() if keyword else '',
+            '_': str(int(time.time() * 1000))
         }
 
         try:
@@ -192,8 +196,8 @@ class FlexSMSClient:
             
             # Check rate limit
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 5.0s.")
-                self.rate_limited_until = time.time() + 5.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 15.0s.")
+                self.rate_limited_until = time.time() + 15.0
                 return None
 
             # Check for session expiration indicators
