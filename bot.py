@@ -491,28 +491,21 @@ def make_dedup_key(record):
         msg_hash = hashlib.md5(clean_msg.encode("utf-8", errors="ignore")).hexdigest()[:12]
         return f"{clean_num}_MSG_{msg_hash}"
 
-def format_sms_message(rec, keyword="", elapsed_delay=1):
+def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     raw_panel = str(rec.get("time", "")).strip()
+    now_utc = datetime.now(timezone.utc)
     
     # 1. Panel time strictly matches the portal table row character-for-character:
-    # If the web portal says "2026-11-16 00:49:47", this prints "2026-11-16 00:49:47"
-    panel_display = raw_panel if raw_panel else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # If the web portal says "2026-11-16 01:04:44", this prints "2026-11-16 01:04:44"
+    panel_display = raw_panel if raw_panel else now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 2. Latency represents the instant detection & delivery speed (strictly 1s or 2s Instant)
-    latency_sec = max(1, min(2, int(elapsed_delay)))
-    latency_str = f"{latency_sec}s (Instant ⚡)"
+    # 2. Delivery is the EXACT real-world time the message is dispatched to the Telegram group:
+    # This matches the Telegram bubble timestamp (e.g. 7:06 AM) down to the exact second.
+    bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 3. Delivery time is synchronized strictly 1s after the panel time:
-    # Guarantees Delivery - Panel == Latency (e.g. 00:49:48 - 00:49:47 = 1s)
-    if raw_panel:
-        try:
-            p_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S")
-            delivery_dt = p_dt + timedelta(seconds=latency_sec)
-            bot_delivery_time = delivery_dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            bot_delivery_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    else:
-        bot_delivery_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    # 3. Processing speed shows real sub-second bot delivery:
+    proc_delay = max(0.5, round(float(elapsed_delay), 1))
+    speed_str = f"Instant ⚡ ({proc_delay}s)"
         
     number = html.escape(rec.get("number", "N/A"))
     cli = html.escape(rec.get("cli", "N/A"))
@@ -524,9 +517,9 @@ def format_sms_message(rec, keyword="", elapsed_delay=1):
     text = (
         f"📩 <b>New SMS Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 <b>Panel:</b> <code>{panel_display}</code>\n"
-        f"⚡ <b>Delivery:</b> <code>{bot_delivery_time}</code>\n"
-        f"⏳ <b>Latency:</b> <code>{latency_str}</code>\n"
+        f"🕒 <b>Panel Time:</b> <code>{panel_display}</code>\n"
+        f"⚡ <b>Delivery Time:</b> <code>{bot_delivery_time}</code>\n"
+        f"⏳ <b>Speed:</b> <code>{speed_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🌍 <b>Country:</b> {flag} <b>{country_name}</b>\n"
         f"📱 <b>Number:</b> <code>+{number}</code>\n"
@@ -1436,7 +1429,7 @@ async def process_sms_check(app):
                                 config["collected_numbers"].append(clean_num)
 
                         fetch_elapsed = time.time() - t_fetch_start
-                        delay = max(1, min(2, int(fetch_elapsed + 1)))
+                        delay = max(0.5, round(fetch_elapsed, 1))
                         msg_text = format_sms_message(rec, keyword=kw, elapsed_delay=delay)
                         try:
                             await app.bot.send_message(
