@@ -331,34 +331,29 @@ class FlexSMSClientPool:
             if not self.clients:
                 return None
             n = len(self.clients)
-            start_idx = self.current_idx
-            self.current_idx = (self.current_idx + 1) % n
-            clients_order = [self.clients[(start_idx + i) % n] for i in range(n)]
+            now = time.time()
+            chosen = None
+            for i in range(n):
+                idx = (self.current_idx + i) % n
+                c = self.clients[idx]
+                if c.rate_limited_until <= now:
+                    chosen = c
+                    self.current_idx = (idx + 1) % n
+                    break
 
-        now = time.time()
-        # 1. Try first non-rate-limited client in round-robin order:
-        for client in clients_order:
-            if client.rate_limited_until > now:
-                continue
-                
-            recs = client.fetch_records(keyword=keyword, display_length=display_length)
-            if recs is not None:
-                return recs
-            
-            # Quick re-auth if session dropped:
-            if not client.is_logged_in:
-                logger.info(f"Session expired for {client.username}. Quick re-auth...")
-                if client.login():
-                    recs = client.fetch_records(keyword=keyword, display_length=display_length)
-                    if recs is not None:
-                        return recs
+            if not chosen:
+                chosen = self.clients[self.current_idx]
+                self.current_idx = (self.current_idx + 1) % n
 
-        # 2. Fallback attempt if all available hit a glitch:
-        if clients_order:
-            fallback = clients_order[0]
-            if not fallback.is_logged_in:
-                fallback.login()
-            return fallback.fetch_records(keyword=keyword, display_length=display_length)
+        recs = chosen.fetch_records(keyword=keyword, display_length=display_length)
+        if recs is not None:
+            return recs
+        
+        # Quick re-auth if session dropped (and not rate limited):
+        if not chosen.is_logged_in and chosen.rate_limited_until <= time.time():
+            logger.info(f"Session expired for {chosen.username}. Quick re-auth...")
+            if chosen.login():
+                return chosen.fetch_records(keyword=keyword, display_length=display_length)
 
         return None
 

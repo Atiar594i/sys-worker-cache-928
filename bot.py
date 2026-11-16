@@ -67,7 +67,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 1.0,
+        "interval": 1.1,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -1555,10 +1555,8 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        acc_count = max(1, len(config.get("accounts", [])))
-        min_safe = max(0.4, round(1.0 / acc_count, 2))
-        configured_interval = float(config.get("interval", min_safe))
-        safe_interval = max(min_safe, min(2.0, configured_interval))
+        configured_interval = float(config.get("interval", 1.1))
+        safe_interval = max(1.0, min(2.0, configured_interval))
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
