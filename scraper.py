@@ -10,11 +10,17 @@ from datetime import datetime, timezone
 logger = logging.getLogger("FlexSMSScraper")
 
 class FlexSMSClient:
-    def __init__(self, base_url="http://168.119.13.175/ints", username="Atiar59_FD", password="Atiar5942@#"):
+    def __init__(self, base_url="http://168.119.13.175/ints", username="Atiar59_FD", password="Atiar5942@#", proxy=None):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.proxy = proxy
         self.session = requests.Session()
+        if self.proxy:
+            self.session.proxies = {
+                'http': self.proxy,
+                'https': self.proxy
+            }
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=20,
             pool_maxsize=20,
@@ -63,7 +69,7 @@ class FlexSMSClient:
             
             for attempt in range(2):
                 try:
-                    r = self.session.get(login_page_url, timeout=(3.0, 4.0))
+                    r = self.session.get(login_page_url, timeout=(6.0, 15.0))
                     
                     if r.status_code == 429:
                         logger.warning(f"Status 429 received on login for {self.username}. Backing off 0.5s...")
@@ -88,7 +94,7 @@ class FlexSMSClient:
                         'capt': captcha_ans
                     }
                     
-                    r_post = self.session.post(signin_url, data=login_data, timeout=(3.0, 4.0), allow_redirects=True)
+                    r_post = self.session.post(signin_url, data=login_data, timeout=(6.0, 15.0), allow_redirects=True)
                     
                     if "SMSDashboard" not in r_post.url and r_post.status_code != 200:
                         logger.error(f"Login failed for {self.username}. Final URL: {r_post.url}")
@@ -96,13 +102,13 @@ class FlexSMSClient:
                         continue
 
                     reports_url = f"{self.base_url}/agent/FailedSMSReports"
-                    r_rep = self.session.get(reports_url, timeout=(3.0, 4.0))
+                    r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
                     
                     if r_rep.status_code == 429:
                         logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 0.5s...")
                         self.rate_limited_until = time.time() + 0.5
                         time.sleep(0.5)
-                        r_rep = self.session.get(reports_url, timeout=(3.0, 4.0))
+                        r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
                         if r_rep.status_code != 200:
                             continue
                     if r_rep.status_code != 200:
@@ -264,17 +270,29 @@ class FlexSMSClientPool:
             for acc in accounts:
                 u = acc.get("username", "").strip()
                 p = acc.get("password", "").strip()
+                prx = acc.get("proxy", "").strip() or None
                 if not u or not p:
                     continue
                 if u.lower() in existing_map:
                     c = existing_map[u.lower()]
+                    needs_reauth = False
                     if c.password != p:
                         c.password = p
+                        needs_reauth = True
+                    if getattr(c, "proxy", None) != prx:
+                        c.proxy = prx
+                        if prx:
+                            c.session.proxies = {'http': prx, 'https': prx}
+                        else:
+                            c.session.proxies = {}
+                        needs_reauth = True
+                    if needs_reauth:
                         c.is_logged_in = False
+                        c.ajax_url = None
                     new_clients.append(c)
                 else:
-                    logger.info(f"Adding new client to pool: {u}")
-                    new_clients.append(FlexSMSClient(self.base_url, u, p))
+                    logger.info(f"Adding new client to pool: {u} (proxy: {'Yes' if prx else 'Direct'})")
+                    new_clients.append(FlexSMSClient(self.base_url, u, p, proxy=prx))
             
             if not new_clients:
                 new_clients.append(FlexSMSClient(self.base_url, "Atiar59_FD", "Atiar5942@#"))
@@ -289,20 +307,22 @@ class FlexSMSClientPool:
         statuses = []
         now = time.time()
         for c in clients:
+            prx_badge = " 🇩🇪 DE" if (c.proxy and "_area-DE" in c.proxy) else (" 🌐 Prx" if c.proxy else " ⚡ Direct")
             if c.rate_limited_until > now:
                 remaining = int(c.rate_limited_until - now)
-                st = f"⏳ রেট-লিমিট ({remaining}s)"
+                st = f"⏳ রেট-লিমিট ({remaining}s){prx_badge}"
             elif c.is_logged_in:
                 resp = f" ({c.last_response_time:.2f}s)" if c.last_response_time > 0 else ""
-                st = f"🟢 সক্রিয়{resp}"
+                st = f"🟢 সক্রিয়{resp}{prx_badge}"
             else:
-                st = "🔴 লগইন হয়নি"
+                st = f"🔴 লগইন হয়নি{prx_badge}"
             statuses.append({
                 "username": c.username,
                 "status": st,
                 "is_logged_in": c.is_logged_in,
                 "is_rate_limited": c.rate_limited_until > now,
-                "response_time": c.last_response_time
+                "response_time": c.last_response_time,
+                "proxy": c.proxy
             })
         return statuses
 

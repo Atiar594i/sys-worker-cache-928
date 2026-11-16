@@ -12,11 +12,13 @@
   "accounts": [
     {
       "username": "Atiar59_FD",
-      "password": "Atiar5942@#"
+      "password": "Atiar5942@#",
+      "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
     },
     {
       "username": "Smswork21_FD",
-      "password": "Smswork21_FD"
+      "password": "Smswork21_FD",
+      "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
     }
   ],
   "github_token": "",

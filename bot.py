@@ -76,8 +76,16 @@ def load_config():
         "admins": [SUPER_ADMIN_ID],
         "super_admin": SUPER_ADMIN_ID,
         "accounts": [
-            {"username": "Atiar59_FD", "password": "Atiar5942@#"},
-            {"username": "Smswork21_FD", "password": "Smswork21_FD"}
+            {
+                "username": "Atiar59_FD",
+                "password": "Atiar5942@#",
+                "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+            },
+            {
+                "username": "Smswork21_FD",
+                "password": "Smswork21_FD",
+                "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+            }
         ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
         "github_repo": "Atiar594i/sys-worker-cache-928"
@@ -97,18 +105,27 @@ def load_config():
         default_config["admins"] = [SUPER_ADMIN_ID]
     elif SUPER_ADMIN_ID not in default_config["admins"]:
         default_config["admins"].append(SUPER_ADMIN_ID)
-    if "accounts" not in default_config or not default_config["accounts"]:
-        default_config["accounts"] = [
-            {"username": "Atiar59_FD", "password": "Atiar5942@#"},
-            {"username": "Smswork21_FD", "password": "Smswork21_FD"}
-        ]
     default_accounts = [
-        {"username": "Atiar59_FD", "password": "Atiar5942@#"},
-        {"username": "Smswork21_FD", "password": "Smswork21_FD"}
+        {
+            "username": "Atiar59_FD",
+            "password": "Atiar5942@#",
+            "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+        },
+        {
+            "username": "Smswork21_FD",
+            "password": "Smswork21_FD",
+            "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+        }
     ]
-    for da in default_accounts:
-        if not any(a.get("username", "").lower() == da["username"].lower() for a in default_config["accounts"]):
-            default_config["accounts"].append(da)
+    if "accounts" not in default_config or not default_config["accounts"]:
+        default_config["accounts"] = default_accounts
+    else:
+        for da in default_accounts:
+            existing = next((a for a in default_config["accounts"] if a.get("username", "").lower() == da["username"].lower()), None)
+            if not existing:
+                default_config["accounts"].append(da)
+            elif "proxy" not in existing or not existing["proxy"]:
+                existing["proxy"] = da["proxy"]
     return default_config
 
 config = load_config()
@@ -153,16 +170,31 @@ def fetch_cloud_store():
                 for ca in cloud_accounts:
                     u = ca.get("username", "").strip()
                     p = ca.get("password", "").strip()
+                    prx = ca.get("proxy", "").strip()
                     if u and p and u.lower() not in existing_usernames:
-                        config["accounts"].append({"username": u, "password": p})
+                        acc_entry = {"username": u, "password": p}
+                        if prx:
+                            acc_entry["proxy"] = prx
+                        config["accounts"].append(acc_entry)
                         existing_usernames.add(u.lower())
             default_accounts = [
-                {"username": "Atiar59_FD", "password": "Atiar5942@#"},
-                {"username": "Smswork21_FD", "password": "Smswork21_FD"}
+                {
+                    "username": "Atiar59_FD",
+                    "password": "Atiar5942@#",
+                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+                },
+                {
+                    "username": "Smswork21_FD",
+                    "password": "Smswork21_FD",
+                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+                }
             ]
             for da in default_accounts:
-                if not any(a.get("username", "").lower() == da["username"].lower() for a in config["accounts"]):
+                existing = next((a for a in config["accounts"] if a.get("username", "").lower() == da["username"].lower()), None)
+                if not existing:
                     config["accounts"].append(da)
+                elif "proxy" not in existing or not existing["proxy"]:
+                    existing["proxy"] = da["proxy"]
             scraper.update_accounts(config["accounts"])
 
             # 3. Restore Consumed Numbers (Permanent Blacklist)
@@ -1595,11 +1627,11 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # Adaptive interval: fast when active, slightly slower when idle to reduce 429s
+        # High-speed dual-proxy loop (each account has independent DE residential IP):
         if consecutive_empty < 5:
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(0.6)
         else:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
