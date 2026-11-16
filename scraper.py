@@ -192,8 +192,8 @@ class FlexSMSClient:
             
             # Check rate limit
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 3.0s.")
-                self.rate_limited_until = time.time() + 3.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 8.0s.")
+                self.rate_limited_until = time.time() + 8.0
                 return None
 
             # Check for session expiration indicators
@@ -241,6 +241,7 @@ class FlexSMSClientPool:
         self.base_url = base_url.rstrip("/")
         self.clients = []
         self.current_idx = 0
+        self.pool_rate_limited_until = 0.0
         self.lock = threading.Lock()
         if accounts:
             self.update_accounts(accounts)
@@ -330,8 +331,10 @@ class FlexSMSClientPool:
         with self.lock:
             if not self.clients:
                 return None
-            n = len(self.clients)
             now = time.time()
+            if self.pool_rate_limited_until > now:
+                return None
+            n = len(self.clients)
             chosen = None
             for i in range(n):
                 idx = (self.current_idx + i) % n
@@ -349,8 +352,14 @@ class FlexSMSClientPool:
         if recs is not None:
             return recs
         
-        # Quick re-auth if session dropped (and not rate limited):
-        if not chosen.is_logged_in and chosen.rate_limited_until <= time.time():
+        # If rate limited, set pool cooldown so the whole IP cools down:
+        if chosen.rate_limited_until > time.time():
+            with self.lock:
+                self.pool_rate_limited_until = chosen.rate_limited_until
+            return None
+
+        # Quick re-auth if session dropped:
+        if not chosen.is_logged_in:
             logger.info(f"Session expired for {chosen.username}. Quick re-auth...")
             if chosen.login():
                 return chosen.fetch_records(keyword=keyword, display_length=display_length)
