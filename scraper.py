@@ -177,7 +177,7 @@ class FlexSMSClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.0, 3.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(4.0, 10.0))
             self.last_response_time = time.time() - t0
             
             date_str = res.headers.get('Date')
@@ -192,8 +192,8 @@ class FlexSMSClient:
             
             # Check rate limit
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 8.0s.")
-                self.rate_limited_until = time.time() + 8.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 5.0s.")
+                self.rate_limited_until = time.time() + 5.0
                 return None
 
             # Check for session expiration indicators
