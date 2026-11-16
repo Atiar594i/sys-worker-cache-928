@@ -367,6 +367,8 @@ class FlexSMSClientPool:
             with self.lock:
                 clients = list(self.clients)
             now = time.time()
+            # Staggered failover: wait a tiny offset so both accounts never hammer simultaneously
+            time.sleep(0.1)
             for c in clients:
                 if c is not chosen and c.rate_limited_until <= now:
                     logger.info(f"Failover: switching from {chosen.username} to {c.username}")

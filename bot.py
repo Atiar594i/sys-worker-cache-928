@@ -1676,7 +1676,12 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
 
     logger.info("Starting Telegram Bot with polling...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(
+        drop_pending_updates=True,
+        poll_interval=1.0,
+        timeout=10,
+        allowed_updates=["message", "callback_query"]
+    )
 
 if __name__ == "__main__":
     main()
