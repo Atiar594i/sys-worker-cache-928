@@ -516,24 +516,26 @@ def make_dedup_key(record):
 def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     raw_panel = str(rec.get("time", "")).strip()
     now_utc = datetime.now(timezone.utc)
+    bd_tz = timezone(timedelta(hours=6))
+    now_bd = now_utc.astimezone(bd_tz)
     
-    # 1. Panel time strictly matches the portal table row character-for-character:
-    # If the web portal says "2026-11-16 01:04:44", this prints "2026-11-16 01:04:44"
-    panel_display = raw_panel if raw_panel else now_utc.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 2. Delivery is the EXACT real-world time the message is dispatched to the Telegram group:
-    # This matches the Telegram bubble timestamp down to the exact second.
-    bot_delivery_time = now_utc.strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 3. Calculate true mathematical difference between Panel Time and Delivery Time:
+    # 1. Panel time converted to Bangladesh Standard Time (BST, UTC+6):
     panel_sec_diff = None
     if raw_panel:
         try:
-            panel_dt = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            panel_sec_diff = int((now_utc - panel_dt).total_seconds())
+            panel_dt_utc = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            panel_sec_diff = int((now_utc - panel_dt_utc).total_seconds())
+            panel_dt_bd = panel_dt_utc.astimezone(bd_tz)
+            panel_display = panel_dt_bd.strftime("%Y-%m-%d %I:%M:%S %p")
         except Exception:
-            pass
-
+            panel_display = raw_panel
+    else:
+        panel_display = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+    
+    # 2. Delivery is the EXACT real-world time the message is dispatched to the Telegram group (Bangladesh Time):
+    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+    
+    # 3. Calculate true mathematical difference between Panel Time and Delivery Time:
     if panel_sec_diff is not None and panel_sec_diff >= 0:
         actual_delay = panel_sec_diff
     else:
