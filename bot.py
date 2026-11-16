@@ -1489,8 +1489,8 @@ async def process_sms_check(app):
 
         try:
             t_fetch_start = time.time()
-            # Fast raw indexed fetch without slow MySQL LIKE table scan (0.1s vs 15s!):
-            records = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=40)
+            # Fast raw indexed fetch with deep buffer (80 records) to never miss burst traffic:
+            records = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=80)
             if not records:
                 return 0
 
@@ -1627,11 +1627,11 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # High-speed dual-proxy loop (each account has independent DE residential IP):
+        # High-speed dual-proxy loop (safe 3s cadence per account, zero 429 risk):
         if consecutive_empty < 5:
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.7)
         else:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(1.1)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))

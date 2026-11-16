@@ -252,7 +252,7 @@ class FlexSMSClientPool:
         self.clients = []
         self.current_idx = 0
         self.pool_rate_limited_until = 0.0
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         if accounts:
             self.update_accounts(accounts)
 
@@ -351,7 +351,7 @@ class FlexSMSClientPool:
             results[c.username] = ok
         return results
 
-    def fetch_records(self, keyword="", display_length=15):
+    def fetch_records(self, keyword="", display_length=80):
         with self.lock:
             if not self.clients:
                 return None
@@ -370,24 +370,26 @@ class FlexSMSClientPool:
             if not chosen:
                 # All clients rate-limited — pick the one whose cooldown expires soonest
                 soonest = min(self.clients, key=lambda c: c.rate_limited_until)
-                wait = max(0.0, soonest.rate_limited_until - now)
-                if wait > 0:
-                    logger.warning(f"All accounts rate-limited. Waiting {wait:.1f}s for {soonest.username}...")
-                    time.sleep(wait)
                 chosen = soonest
-                with self.lock:
-                    self.current_idx = (self.clients.index(chosen) + 1) % n
+                self.current_idx = (self.clients.index(chosen) + 1) % n
+
+        # If chosen client is still in cooldown, wait OUTSIDE the lock:
+        now = time.time()
+        if chosen.rate_limited_until > now:
+            wait = chosen.rate_limited_until - now
+            if 0.0 < wait <= 6.0:
+                logger.warning(f"All accounts rate-limited. Waiting {wait:.1f}s for {chosen.username}...")
+                time.sleep(wait)
 
         recs = chosen.fetch_records(keyword=keyword, display_length=display_length)
         if recs is not None:
             return recs
         
-        # If rate limited, try the next available client immediately (don't halt the pool):
+        # If rate limited, try the next available client immediately:
         if chosen.rate_limited_until > time.time():
             with self.lock:
                 clients = list(self.clients)
             now = time.time()
-            # Staggered failover: wait a tiny offset so both accounts never hammer simultaneously
             time.sleep(0.1)
             for c in clients:
                 if c is not chosen and c.rate_limited_until <= now:
