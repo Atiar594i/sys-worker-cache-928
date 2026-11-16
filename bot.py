@@ -1520,7 +1520,7 @@ async def background_monitoring_loop(app):
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
         configured_interval = float(config.get("interval", 1.0))
-        safe_interval = max(0.8, min(1.5, configured_interval))
+        safe_interval = max(1.0, min(2.0, configured_interval))
         await asyncio.sleep(safe_interval)
 
 async def handle_health_check(request):
