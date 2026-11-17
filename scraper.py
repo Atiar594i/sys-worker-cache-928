@@ -15,6 +15,23 @@ class FlexSMSClient:
         self.username = username
         self.password = password
         self.proxy = proxy
+        self._init_session()
+        self.ajax_url = None
+        self.is_logged_in = False
+        self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.last_login_time = 0
+        self.rate_limited_until = 0.0
+        self.last_response_time = 0.0
+        self.server_clock_skew = 42.8
+        self.echo_counter = 0
+        self.login_lock = threading.Lock()
+
+    def _init_session(self):
+        try:
+            if hasattr(self, 'session') and self.session:
+                self.session.close()
+        except Exception:
+            pass
         self.session = requests.Session()
         if self.proxy:
             self.session.proxies = {
@@ -33,15 +50,6 @@ class FlexSMSClient:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Connection': 'keep-alive'
         })
-        self.ajax_url = None
-        self.is_logged_in = False
-        self.current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        self.last_login_time = 0
-        self.rate_limited_until = 0.0
-        self.last_response_time = 0.0
-        self.server_clock_skew = 42.8
-        self.echo_counter = 0
-        self.login_lock = threading.Lock()
 
     def solve_captcha(self, html_text):
         """Extract and solve simple math captcha like 'What is 7 + 10 = ?'"""
@@ -237,6 +245,11 @@ class FlexSMSClient:
 
         except Exception as e:
             logger.error(f"Error fetching records for {self.username}: {e}")
+            # Reset connection and set 3s backoff on this client so peer client immediately handles traffic:
+            self.rate_limited_until = time.time() + 3.0
+            self.is_logged_in = False
+            self.ajax_url = None
+            self._init_session()
             return None
 
 

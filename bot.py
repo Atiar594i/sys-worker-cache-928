@@ -79,7 +79,7 @@ def load_config():
             {
                 "username": "Atiar59_FD",
                 "password": "Atiar5942@#",
-                "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+                "proxy": ""
             },
             {
                 "username": "Smswork21_FD",
@@ -109,7 +109,7 @@ def load_config():
         {
             "username": "Atiar59_FD",
             "password": "Atiar5942@#",
-            "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+            "proxy": ""
         },
         {
             "username": "Smswork21_FD",
@@ -124,7 +124,7 @@ def load_config():
             existing = next((a for a in default_config["accounts"] if a.get("username", "").lower() == da["username"].lower()), None)
             if not existing:
                 default_config["accounts"].append(da)
-            elif "proxy" not in existing or not existing["proxy"]:
+            else:
                 existing["proxy"] = da["proxy"]
     return default_config
 
@@ -181,7 +181,7 @@ def fetch_cloud_store():
                 {
                     "username": "Atiar59_FD",
                     "password": "Atiar5942@#",
-                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-atiar1:A59427509@proxy.bestproxy.com:2312"
+                    "proxy": ""
                 },
                 {
                     "username": "Smswork21_FD",
@@ -193,7 +193,7 @@ def fetch_cloud_store():
                 existing = next((a for a in config["accounts"] if a.get("username", "").lower() == da["username"].lower()), None)
                 if not existing:
                     config["accounts"].append(da)
-                elif "proxy" not in existing or not existing["proxy"]:
+                else:
                     existing["proxy"] = da["proxy"]
             scraper.update_accounts(config["accounts"])
 
