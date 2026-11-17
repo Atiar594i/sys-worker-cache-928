@@ -5,7 +5,9 @@ import urllib.parse
 import time
 import email.utils
 import threading
+import uuid
 from datetime import datetime, timezone
+from urllib3.util import Retry
 
 logger = logging.getLogger("FlexSMSScraper")
 
@@ -14,6 +16,7 @@ class FlexSMSClient:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.raw_proxy = proxy
         self.proxy = proxy
         self._init_session()
         self.ajax_url = None
@@ -33,15 +36,34 @@ class FlexSMSClient:
         except Exception:
             pass
         self.session = requests.Session()
+        
+        # If BestProxy is used, attach a fresh dynamic session tag so BestProxy rotates to a clean IP
+        if self.raw_proxy and "bp-Atiar59w" in self.raw_proxy:
+            sess_id = uuid.uuid4().hex[:6]
+            if "_session-" in self.raw_proxy:
+                self.proxy = re.sub(r'_session-[^:@/]+', f'_session-{sess_id}', self.raw_proxy)
+            elif "_area-" in self.raw_proxy:
+                self.proxy = re.sub(r'(_area-[^:@/]+)', r'\1_session-' + sess_id, self.raw_proxy)
+            else:
+                self.proxy = self.raw_proxy
+        else:
+            self.proxy = self.raw_proxy
+
         if self.proxy:
             self.session.proxies = {
                 'http': self.proxy,
                 'https': self.proxy
             }
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.2,
+            status_forcelist=[500, 502, 503, 504],
+            raise_on_status=False
+        )
         adapter = requests.adapters.HTTPAdapter(
             pool_connections=20,
             pool_maxsize=20,
-            max_retries=0,
+            max_retries=retry_strategy,
             pool_block=False
         )
         self.session.mount("http://", adapter)
@@ -80,8 +102,8 @@ class FlexSMSClient:
                     r = self.session.get(login_page_url, timeout=(6.0, 15.0))
                     
                     if r.status_code == 429:
-                        logger.warning(f"Status 429 received on login for {self.username}. Backing off 0.5s...")
-                        self.rate_limited_until = time.time() + 0.5
+                        logger.warning(f"Status 429 received on login for {self.username}. Refreshing IP/session...")
+                        self._init_session()
                         time.sleep(0.5)
                         continue
                     if r.status_code != 200:
@@ -113,8 +135,8 @@ class FlexSMSClient:
                     r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
                     
                     if r_rep.status_code == 429:
-                        logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Backing off 0.5s...")
-                        self.rate_limited_until = time.time() + 0.5
+                        logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Refreshing IP/session...")
+                        self._init_session()
                         time.sleep(0.5)
                         r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
                         if r_rep.status_code != 200:
@@ -209,10 +231,16 @@ class FlexSMSClient:
                 except Exception:
                     pass
             
-            # Check rate limit — short 5s per-account cooldown so the pool stays alive
+            # Instant 429 recovery: invalidate session & re-login immediately for fresh sesskey
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Cooldown set to 5.0s.")
-                self.rate_limited_until = time.time() + 5.0
+                logger.warning(f"Status 429 on Ajax call for {self.username}. Invalidating session and re-logging in immediately...")
+                self.is_logged_in = False
+                self.ajax_url = None
+                self.rate_limited_until = 0.0
+                self._init_session()
+                if self.login():
+                    return self.fetch_records(keyword=keyword, display_length=display_length)
+                self.rate_limited_until = time.time() + 2.0
                 return None
 
             # Check for session expiration indicators

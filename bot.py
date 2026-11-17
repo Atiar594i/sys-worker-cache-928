@@ -1627,11 +1627,12 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # High-speed dual-proxy loop (safe 3s cadence per account, zero 429 risk):
-        if consecutive_empty < 5:
-            await asyncio.sleep(0.7)
+        # Smart pacing: 2.0s loop = 4.0s-4.5s per account (zero 429 rate limit risk, 1-2s delivery)
+        loop_interval = max(1.8, float(config.get("interval", 2.0)))
+        if consecutive_empty == 0:
+            await asyncio.sleep(max(1.2, round(loop_interval * 0.7, 1)))
         else:
-            await asyncio.sleep(1.1)
+            await asyncio.sleep(loop_interval)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
