@@ -84,7 +84,7 @@ def load_config():
             {
                 "username": "Smswork21_FD",
                 "password": "Smswork21_FD",
-                "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+                "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
             }
         ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
@@ -114,7 +114,7 @@ def load_config():
         {
             "username": "Smswork21_FD",
             "password": "Smswork21_FD",
-            "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+            "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
         }
     ]
     if "accounts" not in default_config or not default_config["accounts"]:
@@ -186,7 +186,7 @@ def fetch_cloud_store():
                 {
                     "username": "Smswork21_FD",
                     "password": "Smswork21_FD",
-                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-smswork2:A59427509@proxy.bestproxy.com:2312"
+                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
                 }
             ]
             for da in default_accounts:

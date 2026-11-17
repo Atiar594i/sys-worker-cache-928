@@ -143,6 +143,7 @@ class FlexSMSClient:
                     time.sleep(0.3)
 
             self.is_logged_in = False
+            self.rate_limited_until = time.time() + 20.0
             return False
 
     def fetch_records(self, keyword="", display_length=15):
@@ -371,17 +372,27 @@ class FlexSMSClientPool:
             now = time.time()
             n = len(self.clients)
             chosen = None
-            # Always try every client in round-robin: skip only if rate-limited
+            # Pass 1: Prioritize clients that are ready (not rate-limited) AND already logged in
             for i in range(n):
                 idx = (self.current_idx + i) % n
                 c = self.clients[idx]
-                if c.rate_limited_until <= now:
+                if c.rate_limited_until <= now and c.is_logged_in and c.ajax_url:
                     chosen = c
                     self.current_idx = (idx + 1) % n
                     break
 
+            # Pass 2: If no logged-in client is available, pick any client whose cooldown has expired
             if not chosen:
-                # All clients rate-limited — pick the one whose cooldown expires soonest
+                for i in range(n):
+                    idx = (self.current_idx + i) % n
+                    c = self.clients[idx]
+                    if c.rate_limited_until <= now:
+                        chosen = c
+                        self.current_idx = (idx + 1) % n
+                        break
+
+            # Pass 3: All clients rate-limited — pick the one whose cooldown expires soonest
+            if not chosen:
                 soonest = min(self.clients, key=lambda c: c.rate_limited_until)
                 chosen = soonest
                 self.current_idx = (self.clients.index(chosen) + 1) % n
