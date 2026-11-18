@@ -534,6 +534,15 @@ def extract_otp(text):
     return None
 
 def make_dedup_key(record):
+    raw_time = str(record.get("time", "")).strip()
+    raw_num = str(record.get("number", "")).strip()
+    clean_num = re.sub(r'[^0-9]', '', raw_num)
+    message = str(record.get("message", "")).strip()
+    otp = extract_otp(message) or ""
+    msg_hash = hashlib.md5(message.encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return f"{clean_num}_{raw_time}_{otp}_{msg_hash}"
+
+def make_legacy_dedup_key(record):
     raw_num = str(record.get("number", "")).strip()
     clean_num = re.sub(r'[^0-9]', '', raw_num)
     message = str(record.get("message", "")).strip()
@@ -1587,8 +1596,11 @@ async def background_monitoring_loop(app):
             if init_recs:
                 for r in init_recs:
                     k = make_dedup_key(r)
-                    if k in config.get("seen_hashes", []):
+                    legacy_k = make_legacy_dedup_key(r)
+                    if k in config.get("seen_hashes", []) or legacy_k in config.get("seen_hashes", []):
                         seen_set.add(k)
+                        if k not in config["seen_hashes"]:
+                            config["seen_hashes"].append(k)
 
                     raw_num = str(r.get("number", "")).strip()
                     clean_num = re.sub(r'[^0-9]', '', raw_num)
