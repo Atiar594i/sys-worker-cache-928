@@ -7,7 +7,7 @@
   "keywords": [
     "Telegram"
   ],
-  "interval": 0.8,
+  "interval": 0.5,
   "is_running": true,
   "accounts": [
     {

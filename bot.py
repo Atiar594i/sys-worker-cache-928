@@ -114,7 +114,7 @@ def load_config():
         {
             "username": "Smswork21_FD",
             "password": "Smswork21_FD",
-            "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
+            "proxy": ""
         }
     ]
     if "accounts" not in default_config or not default_config["accounts"]:
@@ -186,7 +186,7 @@ def fetch_cloud_store():
                 {
                     "username": "Smswork21_FD",
                     "password": "Smswork21_FD",
-                    "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
+                    "proxy": ""
                 }
             ]
             for da in default_accounts:
@@ -1649,9 +1649,9 @@ async def background_monitoring_loop(app):
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
         # Ultra-fast pacing with multi-account round-robin:
-        loop_interval = max(0.5, float(config.get("interval", 0.8)))
+        loop_interval = max(0.4, float(config.get("interval", 0.5)))
         if consecutive_empty == 0:
-            await asyncio.sleep(max(0.4, round(loop_interval * 0.6, 1)))
+            await asyncio.sleep(max(0.3, round(loop_interval * 0.6, 1)))
         else:
             await asyncio.sleep(loop_interval)
 
