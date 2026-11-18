@@ -25,7 +25,7 @@ class FlexSMSClient:
         self.last_login_time = 0
         self.rate_limited_until = 0.0
         self.last_response_time = 0.0
-        self.server_clock_skew = 42.8
+        self.server_clock_skew = 47.6
         self.echo_counter = 0
         self.login_lock = threading.Lock()
 
@@ -55,8 +55,8 @@ class FlexSMSClient:
                 'https': self.proxy
             }
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.2,
+            total=1,
+            backoff_factor=0.1,
             status_forcelist=[500, 502, 503, 504],
             raise_on_status=False
         )
@@ -99,22 +99,22 @@ class FlexSMSClient:
             
             for attempt in range(2):
                 try:
-                    r = self.session.get(login_page_url, timeout=(6.0, 15.0))
+                    r = self.session.get(login_page_url, timeout=(2.5, 5.0))
                     
                     if r.status_code == 429:
                         logger.warning(f"Status 429 received on login for {self.username}. Refreshing IP/session...")
                         self._init_session()
-                        time.sleep(0.5)
+                        time.sleep(0.3)
                         continue
                     if r.status_code != 200:
                         logger.error(f"Failed to load login page. Status: {r.status_code}")
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         continue
 
                     captcha_ans = self.solve_captcha(r.text)
                     if captcha_ans is None:
                         logger.error("Could not parse captcha from login page!")
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         continue
 
                     logger.info(f"Captcha solved for {self.username}: {captcha_ans}")
@@ -124,26 +124,26 @@ class FlexSMSClient:
                         'capt': captcha_ans
                     }
                     
-                    r_post = self.session.post(signin_url, data=login_data, timeout=(6.0, 15.0), allow_redirects=True)
+                    r_post = self.session.post(signin_url, data=login_data, timeout=(2.5, 5.0), allow_redirects=True)
                     
                     if "SMSDashboard" not in r_post.url and r_post.status_code != 200:
                         logger.error(f"Login failed for {self.username}. Final URL: {r_post.url}")
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         continue
 
                     reports_url = f"{self.base_url}/agent/FailedSMSReports"
-                    r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
+                    r_rep = self.session.get(reports_url, timeout=(2.5, 5.0))
                     
                     if r_rep.status_code == 429:
                         logger.warning(f"Status 429 on FailedSMSReports for {self.username}. Refreshing IP/session...")
                         self._init_session()
-                        time.sleep(0.5)
-                        r_rep = self.session.get(reports_url, timeout=(6.0, 15.0))
+                        time.sleep(0.3)
+                        r_rep = self.session.get(reports_url, timeout=(2.5, 5.0))
                         if r_rep.status_code != 200:
                             continue
                     if r_rep.status_code != 200:
                         logger.error(f"Failed to load FailedSMSReports page. Status: {r_rep.status_code}")
-                        time.sleep(0.3)
+                        time.sleep(0.2)
                         continue
 
                     ajax_match = re.search(r'sAjaxSource":\s*"([^"]+)"', r_rep.text)
@@ -218,7 +218,7 @@ class FlexSMSClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(4.0, 10.0))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.0))
             self.last_response_time = time.time() - t0
             
             date_str = res.headers.get('Date')
@@ -274,8 +274,8 @@ class FlexSMSClient:
 
         except Exception as e:
             logger.error(f"Error fetching records for {self.username}: {e}")
-            # Reset connection and set 3s backoff on this client so peer client immediately handles traffic:
-            self.rate_limited_until = time.time() + 3.0
+            # Reset connection and set 20s backoff on this client so peer client immediately handles traffic:
+            self.rate_limited_until = time.time() + 20.0
             self.is_logged_in = False
             self.ajax_url = None
             self._init_session()
@@ -414,44 +414,34 @@ class FlexSMSClientPool:
                 chosen = min(self.clients, key=lambda c: c.rate_limited_until)
                 self.current_idx = (self.clients.index(chosen) + 1) % n
 
-        # If chosen client is still in cooldown, wait OUTSIDE the lock:
+        # If chosen client is still in cooldown, wait OUTSIDE the lock (max 1.5s):
         now = time.time()
         if chosen.rate_limited_until > now:
             wait = chosen.rate_limited_until - now
-            if 0.0 < wait <= 6.0:
-                logger.warning(f"All accounts rate-limited. Waiting {wait:.1f}s for {chosen.username}...")
+            if 0.0 < wait <= 1.5:
                 time.sleep(wait)
 
         recs = chosen.fetch_records(keyword=keyword, display_length=display_length)
         if recs is not None:
             return recs
         
-        # If rate limited, try the next available client immediately:
-        if chosen.rate_limited_until > time.time():
-            with self.lock:
-                clients = list(self.clients)
-            now = time.time()
-            time.sleep(0.1)
-            for c in clients:
-                if c is not chosen and c.rate_limited_until <= now:
-                    logger.info(f"Failover: switching from {chosen.username} to {c.username}")
-                    recs2 = c.fetch_records(keyword=keyword, display_length=display_length)
-                    if recs2 is not None:
-                        return recs2
-            return None
-
-        # Quick re-auth if session dropped:
-        if not chosen.is_logged_in:
-            logger.info(f"Session expired for {chosen.username}. Quick re-auth...")
-            if chosen.login():
-                return chosen.fetch_records(keyword=keyword, display_length=display_length)
-
+        # Instant failover: try the next available client immediately:
+        with self.lock:
+            clients = list(self.clients)
+        now = time.time()
+        for c in clients:
+            if c is not chosen and c.rate_limited_until <= now:
+                logger.info(f"Instant failover: switching from {chosen.username} to {c.username}")
+                recs2 = c.fetch_records(keyword=keyword, display_length=display_length)
+                if recs2 is not None:
+                    return recs2
         return None
 
     @property
     def server_clock_skew(self):
         with self.lock:
             for c in self.clients:
-                if getattr(c, 'server_clock_skew', None) is not None:
-                    return c.server_clock_skew
-        return 42.8
+                skew = getattr(c, 'server_clock_skew', None)
+                if skew is not None and 15.0 < skew < 120.0:
+                    return skew
+        return 47.6

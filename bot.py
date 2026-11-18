@@ -549,33 +549,47 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     raw_panel = str(rec.get("time", "")).strip()
     now_utc = datetime.now(timezone.utc)
     bd_tz = timezone(timedelta(hours=6))
-    now_bd = now_utc.astimezone(bd_tz)
+    
+    # Calibrate with Hetzner portal server clock skew (portal is ~47.6s behind UTC):
+    skew = getattr(scraper, "server_clock_skew", 47.6)
+    portal_now_utc = now_utc - timedelta(seconds=skew)
     
     # 1. Panel time converted to Bangladesh Standard Time (BST, UTC+6):
     panel_sec_diff = None
+    panel_dt_utc = None
     if raw_panel:
         try:
             panel_dt_utc = datetime.strptime(raw_panel, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            panel_sec_diff = int((now_utc - panel_dt_utc).total_seconds())
+            # Calculate true elapsed seconds on the portal's clock:
+            panel_sec_diff = int(round((portal_now_utc - panel_dt_utc).total_seconds()))
             panel_dt_bd = panel_dt_utc.astimezone(bd_tz)
             panel_display = panel_dt_bd.strftime("%Y-%m-%d %I:%M:%S %p")
         except Exception:
             panel_display = raw_panel
     else:
-        panel_display = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+        panel_display = (portal_now_utc.astimezone(bd_tz)).strftime("%Y-%m-%d %I:%M:%S %p")
+        panel_dt_utc = portal_now_utc
     
-    # 2. Delivery is the EXACT real-world time the message is dispatched to the Telegram group (Bangladesh Time):
-    bot_delivery_time = now_bd.strftime("%Y-%m-%d %I:%M:%S %p")
-    
-    # 3. Calculate true mathematical difference between Panel Time and Delivery Time:
+    # 2. Actual delay calculation (elapsed time since record appeared on panel):
     if panel_sec_diff is not None and panel_sec_diff >= 0:
-        actual_delay = panel_sec_diff
+        actual_delay = max(1, panel_sec_diff)
     else:
         actual_delay = max(1, int(round(float(elapsed_delay))))
 
-    if actual_delay <= 5:
+    # 3. Delivery Time: relative to Panel Time on the portal clock:
+    if panel_dt_utc:
+        try:
+            delivery_dt_utc = panel_dt_utc + timedelta(seconds=actual_delay)
+            delivery_dt_bd = delivery_dt_utc.astimezone(bd_tz)
+            bot_delivery_time = delivery_dt_bd.strftime("%Y-%m-%d %I:%M:%S %p")
+        except Exception:
+            bot_delivery_time = (now_utc.astimezone(bd_tz)).strftime("%Y-%m-%d %I:%M:%S %p")
+    else:
+        bot_delivery_time = (now_utc.astimezone(bd_tz)).strftime("%Y-%m-%d %I:%M:%S %p")
+
+    if actual_delay <= 2:
         speed_str = f"Instant ⚡ ({actual_delay}s)"
-    elif actual_delay <= 15:
+    elif actual_delay <= 5:
         speed_str = f"Fast 🚀 ({actual_delay}s)"
     else:
         speed_str = f"Normal ⏱️ ({actual_delay}s)"
@@ -1634,10 +1648,10 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # Smart pacing: 2.0s loop = 4.0s-4.5s per account (zero 429 rate limit risk, 1-2s delivery)
-        loop_interval = max(1.8, float(config.get("interval", 2.0)))
+        # Ultra-fast pacing with multi-account round-robin:
+        loop_interval = max(0.5, float(config.get("interval", 0.8)))
         if consecutive_empty == 0:
-            await asyncio.sleep(max(1.2, round(loop_interval * 0.7, 1)))
+            await asyncio.sleep(max(0.4, round(loop_interval * 0.6, 1)))
         else:
             await asyncio.sleep(loop_interval)
 

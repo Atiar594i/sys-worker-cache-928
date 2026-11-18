@@ -7,7 +7,7 @@
   "keywords": [
     "Telegram"
   ],
-  "interval": 2.0,
+  "interval": 0.8,
   "is_running": true,
   "accounts": [
     {
@@ -18,7 +18,7 @@
     {
       "username": "Smswork21_FD",
       "password": "Smswork21_FD",
-      "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
+      "proxy": ""
     }
   ],
   "github_token": "",
