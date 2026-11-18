@@ -1488,59 +1488,64 @@ async def process_sms_check(app):
         new_sent_count = 0
 
         try:
-            t_fetch_start = time.time()
-            # Fast raw indexed fetch with deep buffer (80 records) to never miss burst traffic:
-            records = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=80)
-            if not records:
-                return 0
+            # Query portal directly with configured keywords so MySQL database filters out all non-target spam:
+            active_keywords = [kw.strip() for kw in keywords if kw.strip()]
+            search_targets = active_keywords if active_keywords else [""]
 
-            # Sort strictly chronological (oldest first, newest last):
-            records.sort(key=lambda r: str(r.get("time", "")))
+            for kw_target in search_targets:
+                t_fetch_start = time.time()
+                # Fast direct filtered fetch with deep buffer (80 records) to never miss burst traffic:
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=80)
+                if not records:
+                    continue
 
-            for rec in records:
-                # In-memory keyword match (0.001ms in RAM):
-                rec_cli = str(rec.get("cli", "")).strip().lower()
-                rec_msg = str(rec.get("message", "")).strip().lower()
+                # Sort strictly chronological (oldest first, newest last):
+                records.sort(key=lambda r: str(r.get("time", "")))
 
-                matched_kw = ""
-                if keywords:
-                    for kw in keywords:
-                        kw_clean = kw.strip().lower()
-                        if kw_clean and (kw_clean in rec_cli or kw_clean in rec_msg):
-                            matched_kw = kw
-                            break
-                    if not matched_kw:
-                        continue
-                else:
-                    matched_kw = "ALL"
+                for rec in records:
+                    # In-memory keyword match (0.001ms in RAM):
+                    rec_cli = str(rec.get("cli", "")).strip().lower()
+                    rec_msg = str(rec.get("message", "")).strip().lower()
 
-                dedup_key = make_dedup_key(rec)
-                if dedup_key not in seen_set:
-                    seen_set.add(dedup_key)
-                    config["seen_hashes"].append(dedup_key)
-                    config["total_sent"] += 1
-                    new_sent_count += 1
+                    matched_kw = ""
+                    if keywords:
+                        for kw in keywords:
+                            kw_clean = kw.strip().lower()
+                            if kw_clean and (kw_clean in rec_cli or kw_clean in rec_msg):
+                                matched_kw = kw
+                                break
+                        if not matched_kw:
+                            continue
+                    else:
+                        matched_kw = "ALL"
 
-                    raw_num = str(rec.get("number", "")).strip()
-                    clean_num = re.sub(r'[^0-9]', '', raw_num)
-                    if clean_num:
-                        consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-                        collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
-                        if clean_num not in consumed_set and clean_num not in collected_set:
-                            config["collected_numbers"].append(clean_num)
+                    dedup_key = make_dedup_key(rec)
+                    if dedup_key not in seen_set:
+                        seen_set.add(dedup_key)
+                        config["seen_hashes"].append(dedup_key)
+                        config["total_sent"] += 1
+                        new_sent_count += 1
 
-                    fetch_elapsed = time.time() - t_fetch_start
-                    delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
-                    msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
-                    try:
-                        await app.bot.send_message(
-                            chat_id=group_id,
-                            text=msg_text,
-                            parse_mode="HTML"
-                        )
-                        logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
-                    except Exception as send_err:
-                        logger.error(f"Failed to send message to group: {send_err}")
+                        raw_num = str(rec.get("number", "")).strip()
+                        clean_num = re.sub(r'[^0-9]', '', raw_num)
+                        if clean_num:
+                            consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+                            collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
+                            if clean_num not in consumed_set and clean_num not in collected_set:
+                                config["collected_numbers"].append(clean_num)
+
+                        fetch_elapsed = time.time() - t_fetch_start
+                        delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
+                        msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
+                        try:
+                            await app.bot.send_message(
+                                chat_id=group_id,
+                                text=msg_text,
+                                parse_mode="HTML"
+                            )
+                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
+                        except Exception as send_err:
+                            logger.error(f"Failed to send message to group: {send_err}")
 
         except Exception as e:
             logger.error(f"Error checking records: {e}")
@@ -1569,34 +1574,28 @@ async def background_monitoring_loop(app):
     # 1. Pre-seed today's records and numbers on startup:
     try:
         keywords = config.get("keywords", [])
-        search_targets = list(keywords) if keywords else [""]
+        active_keywords = [kw.strip() for kw in keywords if kw.strip()]
+        search_targets = active_keywords if active_keywords else [""]
         
         consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
         collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
         new_collected_count = 0
 
-        # Cutoff: Only seed older records beyond 15 mins.
-        # Any unsent code from the last 15 mins will be dispatched immediately!
-        cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=15)
-        cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Pre-seeding historical numbers and existing seen hashes...")
+        for kw_target in search_targets:
+            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=100)
+            if init_recs:
+                for r in init_recs:
+                    k = make_dedup_key(r)
+                    if k in config.get("seen_hashes", []):
+                        seen_set.add(k)
 
-        logger.info(f"Pre-seeding historical records before {cutoff_str}")
-        init_recs = await asyncio.to_thread(scraper.fetch_records, keyword="", display_length=100)
-        if init_recs:
-            for r in init_recs:
-                k = make_dedup_key(r)
-                r_time = str(r.get("time", "")).strip()
-                if r_time < cutoff_str or k in config.get("seen_hashes", []):
-                    seen_set.add(k)
-                    if k not in config["seen_hashes"]:
-                        config["seen_hashes"].append(k)
-
-                raw_num = str(r.get("number", "")).strip()
-                clean_num = re.sub(r'[^0-9]', '', raw_num)
-                if clean_num and clean_num not in consumed_set and clean_num not in collected_set:
-                    config["collected_numbers"].append(clean_num)
-                    collected_set.add(clean_num)
-                    new_collected_count += 1
+                    raw_num = str(r.get("number", "")).strip()
+                    clean_num = re.sub(r'[^0-9]', '', raw_num)
+                    if clean_num and clean_num not in consumed_set and clean_num not in collected_set:
+                        config["collected_numbers"].append(clean_num)
+                        collected_set.add(clean_num)
+                        new_collected_count += 1
 
         logger.info(f"Startup seeding complete: {len(seen_set)} seen keys, {len(config['collected_numbers'])} collected numbers ({new_collected_count} newly seeded from today).")
         save_config(config)

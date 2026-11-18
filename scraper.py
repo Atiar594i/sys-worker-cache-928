@@ -400,29 +400,18 @@ class FlexSMSClientPool:
             now = time.time()
             n = len(self.clients)
             chosen = None
-            # Pass 1: Prioritize clients that are ready (not rate-limited) AND already logged in
+            # Round-robin selection: pick next client whose rate limit cooldown has expired
             for i in range(n):
                 idx = (self.current_idx + i) % n
                 c = self.clients[idx]
-                if c.rate_limited_until <= now and c.is_logged_in and c.ajax_url:
+                if c.rate_limited_until <= now:
                     chosen = c
                     self.current_idx = (idx + 1) % n
                     break
 
-            # Pass 2: If no logged-in client is available, pick any client whose cooldown has expired
+            # If all clients are rate-limited, pick the one whose cooldown expires soonest
             if not chosen:
-                for i in range(n):
-                    idx = (self.current_idx + i) % n
-                    c = self.clients[idx]
-                    if c.rate_limited_until <= now:
-                        chosen = c
-                        self.current_idx = (idx + 1) % n
-                        break
-
-            # Pass 3: All clients rate-limited — pick the one whose cooldown expires soonest
-            if not chosen:
-                soonest = min(self.clients, key=lambda c: c.rate_limited_until)
-                chosen = soonest
+                chosen = min(self.clients, key=lambda c: c.rate_limited_until)
                 self.current_idx = (self.clients.index(chosen) + 1) % n
 
         # If chosen client is still in cooldown, wait OUTSIDE the lock:
