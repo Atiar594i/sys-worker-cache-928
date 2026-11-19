@@ -67,7 +67,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 0.5,
+        "interval": 0.25,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -84,7 +84,7 @@ def load_config():
             {
                 "username": "Smswork21_FD",
                 "password": "Smswork21_FD",
-                "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
+                "proxy": ""
             }
         ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
@@ -114,7 +114,7 @@ def load_config():
         {
             "username": "Smswork21_FD",
             "password": "Smswork21_FD",
-            "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
+            "proxy": ""
         }
     ]
     if "accounts" not in default_config or not default_config["accounts"]:
@@ -186,7 +186,7 @@ def fetch_cloud_store():
                 {
                     "username": "Smswork21_FD",
                     "password": "Smswork21_FD",
-                    "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
+                    "proxy": ""
                 }
             ]
             for da in default_accounts:
@@ -1553,15 +1553,19 @@ async def process_sms_check(app):
                         fetch_elapsed = time.time() - t_fetch_start
                         delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
                         msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
-                        try:
-                            await app.bot.send_message(
-                                chat_id=group_id,
-                                text=msg_text,
-                                parse_mode="HTML"
-                            )
-                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
-                        except Exception as send_err:
-                            logger.error(f"Failed to send message to group: {send_err}")
+                        
+                        async def _send_one_sms(txt, num, d_key):
+                            try:
+                                await app.bot.send_message(
+                                    chat_id=group_id,
+                                    text=txt,
+                                    parse_mode="HTML"
+                                )
+                                logger.info(f"Instant Sent SMS to group for number: {num} (Key: {d_key})")
+                            except Exception as send_err:
+                                logger.error(f"Failed to send message to group: {send_err}")
+
+                        asyncio.create_task(_send_one_sms(msg_text, rec.get('number'), dedup_key))
 
         except Exception as e:
             logger.error(f"Error checking records: {e}")
@@ -1650,12 +1654,9 @@ async def background_monitoring_loop(app):
         except Exception as e:
             logger.error(f"Unexpected error in background monitoring loop: {e}")
 
-        # Ultra-fast pacing with multi-account round-robin:
-        loop_interval = max(0.4, float(config.get("interval", 0.5)))
-        if consecutive_empty == 0:
-            await asyncio.sleep(max(0.3, round(loop_interval * 0.6, 1)))
-        else:
-            await asyncio.sleep(loop_interval)
+        # Ultra-fast continuous polling (0.25s interval, no batching, zero lag):
+        loop_interval = max(0.15, float(config.get("interval", 0.25)))
+        await asyncio.sleep(loop_interval)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))

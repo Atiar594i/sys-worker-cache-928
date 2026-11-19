@@ -239,16 +239,17 @@ class FlexSMSClient:
             '_': str(int(time.time() * 1000))
         }
 
-        # Proactively rotate residential proxy IP every 4 requests to NEVER hit the portal's ~8-request/min rate limit:
+        # Proactively rotate residential proxy IP every 4 requests if proxy is configured:
         if self.proxy and "bp-Atiar59w" in (self.raw_proxy or ""):
             if getattr(self, "request_count_on_ip", 0) >= 4:
                 self.rotate_proxy_ip()
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.8, 3.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.5))
             self.last_response_time = time.time() - t0
             self.last_query_time = time.time()
+            self.consecutive_errors = 0
             
             date_str = res.headers.get('Date')
             if date_str:
@@ -260,14 +261,13 @@ class FlexSMSClient:
                 except Exception:
                     pass
             
-            # Smart 429 handling:
+            # Fast 429 handling:
             if res.status_code == 429:
                 if self.proxy and "bp-Atiar59w" in (self.raw_proxy or ""):
                     logger.warning(f"Status 429 on Ajax call for {self.username} (Proxy). Rotating IP immediately...")
                     self.rotate_proxy_ip()
-                    # Instant retry with fresh IP:
                     try:
-                        res_retry = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.5, 5.0))
+                        res_retry = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.0))
                         if res_retry.status_code == 200:
                             res = res_retry
                             self.last_response_time = time.time() - t0
@@ -278,8 +278,8 @@ class FlexSMSClient:
                     except Exception:
                         return None
                 else:
-                    logger.warning(f"Status 429 on Ajax call for {self.username} (Direct). Setting 60s cooldown...")
-                    self.rate_limited_until = time.time() + 60.0
+                    logger.warning(f"Status 429 on Ajax call for {self.username}. Brief 1.5s cooldown...")
+                    self.rate_limited_until = time.time() + 1.5
                     return None
             else:
                 self.request_count_on_ip = getattr(self, "request_count_on_ip", 0) + 1
@@ -316,11 +316,14 @@ class FlexSMSClient:
 
         except Exception as e:
             logger.error(f"Error fetching records for {self.username}: {e}")
-            # Reset connection and set 20s backoff on this client so peer client immediately handles traffic:
-            self.rate_limited_until = time.time() + 20.0
-            self.is_logged_in = False
-            self.ajax_url = None
-            self._init_session()
+            self.consecutive_errors = getattr(self, "consecutive_errors", 0) + 1
+            if self.consecutive_errors >= 3:
+                self.is_logged_in = False
+                self.ajax_url = None
+                self.rate_limited_until = time.time() + 2.0
+                self._init_session()
+            else:
+                self.rate_limited_until = time.time() + 0.3
             return None
 
 
@@ -443,46 +446,25 @@ class FlexSMSClientPool:
             n = len(self.clients)
             chosen = None
             
-            # 1. First priority: find a client ready for query (Direct client paced >= 7s to prevent 429; Proxy ready anytime)
+            # Ultra-fast round-robin: pick next available client whose cooldown has expired
             for i in range(n):
                 idx = (self.current_idx + i) % n
                 c = self.clients[idx]
-                if c.rate_limited_until > now:
-                    continue
-                # For Direct clients without rotating proxy, pace queries at minimum 7 seconds apart:
-                if not c.proxy and (now - getattr(c, 'last_query_time', 0.0)) < 7.0:
-                    continue
-                chosen = c
-                self.current_idx = (idx + 1) % n
-                break
+                if c.rate_limited_until <= now:
+                    chosen = c
+                    self.current_idx = (idx + 1) % n
+                    break
 
-            # 2. If Direct is pacing, select any available proxy client (which rotates residential IPs):
-            if not chosen:
-                for i in range(n):
-                    idx = (self.current_idx + i) % n
-                    c = self.clients[idx]
-                    if c.rate_limited_until <= now:
-                        chosen = c
-                        self.current_idx = (idx + 1) % n
-                        break
-
-            # 3. If all clients are in cooldown, pick the one expiring soonest:
+            # If all clients are in cooldown, pick the one expiring earliest
             if not chosen:
                 chosen = min(self.clients, key=lambda c: c.rate_limited_until)
                 self.current_idx = (self.clients.index(chosen) + 1) % n
-
-        # If chosen client is still in cooldown, wait OUTSIDE the lock (max 1.5s):
-        now = time.time()
-        if chosen.rate_limited_until > now:
-            wait = chosen.rate_limited_until - now
-            if 0.0 < wait <= 1.5:
-                time.sleep(wait)
 
         recs = chosen.fetch_records(keyword=keyword, display_length=display_length)
         if recs is not None:
             return recs
         
-        # Instant failover: try the next available client immediately:
+        # Instant failover: try the next available client immediately without any sleep:
         with self.lock:
             clients = list(self.clients)
         now = time.time()
