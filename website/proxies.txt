@@ -1,0 +1,5 @@
+# Add rotating proxies here (one per line). Supported formats:
+# http://username:password@ip:port
+# http://ip:port
+# socks5://ip:port
+# If empty, the system automatically uses ultra-fast direct connection with dynamic User-Agent rotation.

@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
+"""
+Main entry point for the Dedicated Telegram OTP Web Hub.
+Runs the standalone website engine located in the dedicated 'website/' folder.
+"""
 import sys
 import subprocess
 import time
+import os
 
 print("=" * 65)
-print("🚀 Launching Dual-Engine System:")
-print("   1. Dedicated Real-Time OTP Web Engine (web_server.py)")
-print("   2. Telegram User Interface Bot (bot.py)")
+print("🚀 Launching Dedicated Telegram OTP Website Hub from 'website/'...")
+print("   - Directory: website/")
+print("   - Dual Accounts: Atiar59_FD & Smswork21_FD (Round-Robin)")
+print("   - Auto-Refresh (1s) & Instant 0ms SSE Pushes")
+print("   - Smart Proxy Rotator & Rate-Limit Shield Active")
 print("=" * 65)
 
-env = os.environ.copy()
-env["SEPARATE_WEB_SERVER"] = "1"
+website_script = os.path.join(os.path.dirname(__file__), "website", "app.py")
 
-# 1. Start dedicated Web Server on Railway's $PORT:
-p_web = subprocess.Popen([sys.executable, "web_server.py"], env=env)
-
-# Small pause to allow web server to bind to port cleanly:
-time.sleep(1.0)
-
-# 2. Start Telegram Bot:
-p_bot = subprocess.Popen([sys.executable, "bot.py"], env=env)
-
-try:
-    while True:
-        if p_web.poll() is not None:
-            print("⚠️ Web server exited! Restarting...")
-            p_web = subprocess.Popen([sys.executable, "web_server.py"], env=env)
-        if p_bot.poll() is not None:
-            print("⚠️ Bot exited! Restarting...")
-            p_bot = subprocess.Popen([sys.executable, "bot.py"], env=env)
-        time.sleep(3)
-except KeyboardInterrupt:
-    p_web.terminate()
-    p_bot.terminate()
+while True:
+    try:
+        p = subprocess.Popen([sys.executable, website_script])
+        p.wait()
+        print("⚠️ Website process exited! Restarting in 1s...")
+        time.sleep(1.0)
+    except KeyboardInterrupt:
+        break
+    except Exception as e:
+        print(f"Error running website: {e}")
+        time.sleep(2.0)

@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ Instant Telegram OTP Hub</title>
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-border: #1f2937;
+      --card-hover: #1e293b;
+      --text-main: #f9fafb;
+      --text-muted: #9ca3af;
+      --accent: #0284c7;
+      --accent-glow: rgba(14, 165, 233, 0.4);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.3);
+      --otp-bg: #1e293b;
+      --otp-color: #38bdf8;
+      --tag-bg: #374151;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+    }
+
+    /* Container */
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* Header */
+    header {
+      background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 44px;
+      height: 44px;
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+
+    .brand-text h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand-text p {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #10b981;
+      animation: pulse 1.5s infinite;
+    }
+
+    .status-badge.disconnected {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border-color: rgba(239, 68, 68, 0.3);
+    }
+    .status-badge.disconnected .status-dot {
+      background-color: #ef4444;
+      animation: none;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.9); opacity: 0.7; }
+      50% { transform: scale(1.3); opacity: 1; }
+      100% { transform: scale(0.9); opacity: 0.7; }
+    }
+
+    .btn-icon {
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: var(--text-main);
+      padding: 7px 12px;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .btn-icon:hover {
+      background: #374151;
+      border-color: #4b5563;
+    }
+
+    .btn-autorefresh {
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: var(--text-muted);
+      transition: all 0.25s ease;
+    }
+
+    .btn-autorefresh.active {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.3) 100%);
+      border-color: #10b981;
+      color: #34d399;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    }
+
+    .btn-refresh {
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      border-color: #38bdf8;
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3);
+    }
+
+    .btn-refresh:hover {
+      background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.5);
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .spin {
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+    }
+
+    .spin-slow {
+      animation: spin 1.2s linear infinite;
+      display: inline-block;
+    }
+
+    .btn-autocopy.active {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: #10b981;
+      color: #34d399;
+    }
+
+    .user-badge {
+      background: #182234;
+      border: 1px solid #283548;
+      padding: 6px 12px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #38bdf8;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .user-badge:hover {
+      background: #1f293d;
+      border-color: #38bdf8;
+    }
+
+    .user-badge .edit-pill {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* Stats & Search Bar */
+    .controls-bar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    @media (max-width: 600px) {
+      .controls-bar {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .search-box {
+      position: relative;
+    }
+
+    .search-input {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 12px 16px 12px 42px;
+      color: #fff;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-glow);
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 16px;
+    }
+
+    .counter-pill {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .counter-number {
+      color: #38bdf8;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+
+    /* OTP Feed */
+    #otp-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      background: var(--card-bg);
+      border: 1px dashed var(--card-border);
+      border-radius: 16px;
+      color: var(--text-muted);
+    }
+    .empty-state .icon {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    /* OTP Card */
+    .otp-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 16px;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .otp-card:hover {
+      border-color: #374151;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .otp-card.new-arrival {
+      animation: highlightCard 2s ease-out;
+    }
+
+    @keyframes highlightCard {
+      0% {
+        border-color: #38bdf8;
+        box-shadow: 0 0 25px rgba(56, 189, 248, 0.6);
+        transform: scale(1.02);
+      }
+      100% {
+        border-color: var(--card-border);
+        box-shadow: none;
+        transform: scale(1);
+      }
+    }
+
+    /* Card Top */
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .country-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+
+    .country-flag {
+      font-size: 1.3rem;
+    }
+
+    .account-pill {
+      font-size: 0.72rem;
+      background: rgba(56, 189, 248, 0.12);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+
+    .time-badge {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 4px 10px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .speed-tag {
+      color: #34d399;
+      font-weight: 600;
+    }
+
+    /* Card Main Grid: Number & OTP */
+    .card-main {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    @media (max-width: 550px) {
+      .card-main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Number Box */
+    .box-container {
+      background: #182234;
+      border: 1px solid #283548;
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .box-container:hover {
+      background: #1f2c42;
+    }
+
+    .box-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 2px;
+    }
+
+    .phone-number {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f3f4f6;
+      letter-spacing: 0.03em;
+      word-break: break-all;
+    }
+
+    /* OTP Code Box */
+    .otp-box {
+      background: linear-gradient(135deg, rgba(2, 132, 199, 0.15) 0%, rgba(14, 165, 233, 0.08) 100%);
+      border: 1.5px solid rgba(14, 165, 233, 0.4);
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .otp-box:hover {
+      background: linear-gradient(135deg, rgba(2, 132, 199, 0.25) 0%, rgba(14, 165, 233, 0.15) 100%);
+      border-color: #38bdf8;
+    }
+
+    .otp-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: #38bdf8;
+      letter-spacing: 0.15em;
+    }
+
+    /* Copy Buttons */
+    .btn-copy {
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: #f9fafb;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .btn-copy:hover {
+      background: #374151;
+      transform: scale(1.03);
+    }
+
+    .btn-copy:active {
+      transform: scale(0.97);
+    }
+
+    .btn-copy-otp {
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      border-color: #38bdf8;
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 700;
+      box-shadow: 0 2px 10px rgba(2, 132, 199, 0.4);
+    }
+
+    .btn-copy-otp:hover {
+      background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+      box-shadow: 0 4px 15px rgba(2, 132, 199, 0.6);
+    }
+
+    .btn-copy.copied {
+      background: #059669 !important;
+      border-color: #10b981 !important;
+      color: #fff !important;
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.5) !important;
+    }
+
+    /* Message Footer */
+    .card-footer {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.8rem;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .msg-preview {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .copy-msg-link {
+      color: #38bdf8;
+      text-decoration: none;
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .copy-msg-link:hover {
+      text-decoration: underline;
+    }
+
+    /* Toast Notification */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #10b981;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 9999;
+      pointer-events: none;
+    }
+
+    #toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>Telegram OTP Live Hub</h1>
+          <p>Instant Real-Time Stream · Zero-Delay Fast Copy</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="connection-status" class="status-badge">
+          <div class="status-dot"></div>
+          <span id="status-text">Connecting...</span>
+        </div>
+        <!-- Auto-Refresh Toggle Button -->
+        <button id="autorefresh-btn" class="btn-icon btn-autorefresh active" onclick="toggleAutoRefresh()" title="Panel theke automatic fast refresh kore code anbe">
+          <span id="autorefresh-icon" class="spin-slow">🔄</span>
+          <span id="autorefresh-text">Auto-Refresh: ON (1s)</span>
+        </button>
+        <!-- Manual Fast Refresh Button -->
+        <button id="refresh-btn" class="btn-icon btn-refresh" onclick="manualRefresh()" title="Instant refresh right now">
+          <span id="refresh-icon">⚡</span>
+          <span id="refresh-text">Refresh</span>
+        </button>
+        <!-- Auto-Copy OTP Toggle -->
+        <button id="autocopy-btn" class="btn-icon" onclick="toggleAutoCopy()" title="Auto-copy OTP when new code arrives">
+          <span id="autocopy-icon">📋</span>
+          <span id="autocopy-text">Auto-Copy OFF</span>
+        </button>
+        <!-- Sound Toggle -->
+        <button id="sound-btn" class="btn-icon" onclick="toggleSound()">
+          <span id="sound-icon">🔔</span>
+          <span id="sound-text">Sound ON</span>
+        </button>
+        <!-- Operator Username Badge -->
+        <div class="user-badge" id="user-badge" onclick="promptUsername()" title="Click to change Operator / User name">
+          <span class="user-icon">👤</span>
+          <span id="username-display">Operator</span>
+          <span class="edit-pill">✎</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Controls -->
+    <div class="controls-bar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input 
+          type="text" 
+          id="search-input" 
+          class="search-input" 
+          placeholder="Search phone number, code, country, or account..." 
+          oninput="filterFeed()"
+        >
+      </div>
+      <div class="counter-pill">
+        <span>Telegram OTPs Today:</span>
+        <span id="counter" class="counter-number">0</span>
+      </div>
+    </div>
+
+    <!-- Feed -->
+    <div id="otp-feed">
+      <div class="empty-state" id="empty-state">
+        <div class="icon">⏳</div>
+        <h3>Waiting for live Telegram OTP codes...</h3>
+        <p style="margin-top: 6px; font-size: 0.85rem;">New codes will appear here the exact millisecond they are received!</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast">
+    <span>✅</span>
+    <span id="toast-msg">Copied!</span>
+  </div>
+
+  <!-- Dedicated High-Speed JavaScript (JS) Engine -->
+  <script>
+    let soundEnabled = true;
+    let autoCopyEnabled = false;
+    let autoRefreshEnabled = true; // Auto-Refresh ON by default for real-time polling!
+    let autoRefreshInterval = 1000; // 1s (1000ms) cadence
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
+    let otpsList = [];
+    let audioCtx = null;
+
+    // Load saved preferences
+    try {
+      const savedUser = localStorage.getItem('otp_hub_username');
+      if (savedUser) {
+        document.getElementById('username-display').textContent = savedUser;
+      }
+      const savedAutoCopy = localStorage.getItem('otp_hub_autocopy');
+      if (savedAutoCopy === '1') {
+        autoCopyEnabled = true;
+        updateAutoCopyBtn();
+      }
+      const savedAutoRefresh = localStorage.getItem('otp_hub_autorefresh');
+      if (savedAutoRefresh === '0') {
+        autoRefreshEnabled = false;
+      }
+    } catch (e) {}
+
+    function updateAutoRefreshUI() {
+      const btn = document.getElementById('autorefresh-btn');
+      const text = document.getElementById('autorefresh-text');
+      const icon = document.getElementById('autorefresh-icon');
+      if (autoRefreshEnabled) {
+        btn.classList.add('active');
+        text.textContent = 'Auto-Refresh: ON (1s)';
+        if (icon) icon.className = 'spin-slow';
+      } else {
+        btn.classList.remove('active');
+        text.textContent = 'Auto-Refresh: OFF';
+        if (icon) icon.className = '';
+      }
+    }
+
+    function toggleAutoRefresh() {
+      autoRefreshEnabled = !autoRefreshEnabled;
+      localStorage.setItem('otp_hub_autorefresh', autoRefreshEnabled ? '1' : '0');
+      updateAutoRefreshUI();
+      if (autoRefreshEnabled) {
+        startAutoRefresh();
+        showToast('🟢 Auto-Refresh ON: প্যানেল থেকে প্রতি সেকেন্ডে অটো চেক হচ্ছে!');
+      } else {
+        stopAutoRefresh();
+        showToast('Auto-Refresh বন্ধ করা হয়েছে');
+      }
+    }
+
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      autoRefreshTimer = setInterval(() => {
+        executeAutoRefresh();
+      }, autoRefreshInterval);
+    }
+
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+    }
+
+    async function executeAutoRefresh() {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      try {
+        const res = await fetch('/api/recent-otps?refresh=1');
+        const data = await res.json();
+        if (data && data.otps && Array.isArray(data.otps)) {
+          const list = [...data.otps].reverse();
+          let newFound = 0;
+          list.forEach(item => {
+            const added = addOtpItem(item, true);
+            if (added) newFound++;
+          });
+          if (newFound > 0) {
+            showToast(`⚡ ${newFound} টি নতুন টেলিগ্রাম ওটিপি এসেছে!`);
+          }
+        }
+      } catch (err) {
+        console.warn('Auto-refresh poll error:', err);
+      } finally {
+        isRefreshing = false;
+      }
+    }
+
+    function promptUsername() {
+      const current = localStorage.getItem('otp_hub_username') || 'Operator';
+      const name = prompt('আপনার ইউজার নেম / অপারেটর নাম লিখুন:', current);
+      if (name && name.trim()) {
+        const cleanName = name.trim();
+        localStorage.setItem('otp_hub_username', cleanName);
+        document.getElementById('username-display').textContent = cleanName;
+        showToast(`User set to: ${cleanName}`);
+      }
+    }
+
+    function toggleAutoCopy() {
+      autoCopyEnabled = !autoCopyEnabled;
+      localStorage.setItem('otp_hub_autocopy', autoCopyEnabled ? '1' : '0');
+      updateAutoCopyBtn();
+      if (autoCopyEnabled) {
+        showToast('⚡ Auto-Copy ON: নতুন কোড আসামাত্রই স্বয়ংক্রিয় কপি হবে!');
+      } else {
+        showToast('Auto-Copy disabled');
+      }
+    }
+
+    function updateAutoCopyBtn() {
+      const btn = document.getElementById('autocopy-btn');
+      const text = document.getElementById('autocopy-text');
+      if (autoCopyEnabled) {
+        btn.classList.add('active');
+        text.textContent = 'Auto-Copy ON';
+      } else {
+        btn.classList.remove('active');
+        text.textContent = 'Auto-Copy OFF';
+      }
+    }
+
+    // Synthesize gentle notification chime with Web Audio API (zero external asset requirement)
+    function playChime() {
+      if (!soundEnabled) return;
+      try {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        const now = audioCtx.currentTime;
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(880, now);
+        osc1.frequency.exponentialRampToValueAtTime(1320, now + 0.15);
+
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(440, now);
+
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
+
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 0.4);
+        osc2.stop(now + 0.4);
+      } catch (e) {
+        console.log('Audio error:', e);
+      }
+    }
+
+    function toggleSound() {
+      soundEnabled = !soundEnabled;
+      const soundIcon = document.getElementById('sound-icon');
+      const soundText = document.getElementById('sound-text');
+      if (soundEnabled) {
+        soundIcon.textContent = '🔔';
+        soundText.textContent = 'Sound ON';
+        playChime();
+        showToast('Notification sound enabled');
+      } else {
+        soundIcon.textContent = '🔕';
+        soundText.textContent = 'Sound OFF';
+        showToast('Notification sound muted');
+      }
+    }
+
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toast-msg');
+      toastMsg.textContent = msg;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 1800);
+    }
+
+    function copyText(text, btnElement, label) {
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {
+        if (btnElement) {
+          const originalHtml = btnElement.innerHTML;
+          btnElement.innerHTML = `✓ Copied!`;
+          btnElement.classList.add('copied');
+          setTimeout(() => {
+            btnElement.innerHTML = originalHtml;
+            btnElement.classList.remove('copied');
+          }, 1500);
+        }
+        showToast(`Copied ${label || 'text'}: ${text}`);
+      }).catch(err => {
+        console.error('Clipboard error:', err);
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        showToast(`Copied ${label || 'text'}: ${text}`);
+      });
+    }
+
+    function createOtpCard(item, isNew = false) {
+      const card = document.createElement('div');
+      card.className = `otp-card ${isNew ? 'new-arrival' : ''}`;
+      card.id = `card-${item.id || item.timestamp}`;
+      card.dataset.num = item.clean_number || item.number || '';
+      card.dataset.otp = item.otp || '';
+      card.dataset.country = (item.country_name || '').toLowerCase();
+      card.dataset.account = (item.account || '').toLowerCase();
+
+      const flag = item.country_flag || '🌐';
+      const country = item.country_name || 'International';
+      const phone = item.number || item.clean_number || '';
+      const cleanPhone = item.clean_number || phone.replace(/\D/g, '');
+      const otp = item.otp || '---';
+      const time = item.panel_time || '';
+      const speed = item.speed || '⚡ Instant Live';
+      const msg = item.message || '';
+      const account = item.account || 'Portal';
+
+      card.innerHTML = `
+        <div class="card-top">
+          <div class="country-info">
+            <span class="country-flag">${flag}</span>
+            <span>${country}</span>
+            <span class="account-pill" title="Portal Account">👤 ${account}</span>
+          </div>
+          <div class="time-badge">
+            <span>🕒 ${time}</span>
+            <span class="speed-tag">${speed}</span>
+          </div>
+        </div>
+
+        <div class="card-main">
+          <!-- Number Box -->
+          <div class="box-container" onclick="copyText('${cleanPhone}', this.querySelector('.btn-copy'), 'Number')">
+            <div>
+              <div class="box-label">Phone Number</div>
+              <div class="phone-number">+${cleanPhone}</div>
+            </div>
+            <button class="btn-copy" onclick="event.stopPropagation(); copyText('${cleanPhone}', this, 'Number')">
+              📋 Copy
+            </button>
+          </div>
+
+          <!-- OTP Box -->
+          <div class="otp-box" onclick="copyText('${otp}', this.querySelector('.btn-copy-otp'), 'OTP')">
+            <div>
+              <div class="box-label" style="color: #38bdf8;">Telegram Code</div>
+              <div class="otp-code">${otp}</div>
+            </div>
+            <button class="btn-copy btn-copy-otp" onclick="event.stopPropagation(); copyText('${otp}', this, 'OTP')">
+              ⚡ Copy OTP
+            </button>
+          </div>
+        </div>
+
+        <div class="card-footer">
+          <span class="msg-preview" title="${msg.replace(/"/g, '&quot;')}">${msg}</span>
+          <a class="copy-msg-link" onclick="copyText('${msg.replace(/'/g, "\\'")}', null, 'Full SMS')">Copy SMS</a>
+        </div>
+      `;
+
+      return card;
+    }
+
+    function addOtpItem(item, isNew = false) {
+      if (!item || !item.otp) return false;
+      // Duplicate check
+      if (otpsList.some(o => (o.id && o.id === item.id) || (o.clean_number === item.clean_number && o.otp === item.otp))) {
+        return false;
+      }
+
+      otpsList.unshift(item);
+      const feed = document.getElementById('otp-feed');
+      const emptyState = document.getElementById('empty-state');
+      if (emptyState) {
+        emptyState.style.display = 'none';
+      }
+
+      const card = createOtpCard(item, isNew);
+      feed.insertBefore(card, feed.firstChild);
+
+      // Keep maximum 200 cards in DOM
+      if (feed.children.length > 200) {
+        feed.removeChild(feed.lastChild);
+      }
+
+      // Update counter
+      document.getElementById('counter').textContent = otpsList.length;
+
+      if (isNew) {
+        playChime();
+        if (autoCopyEnabled && item.otp) {
+          copyText(item.otp, null, '⚡ Auto-Copied OTP');
+        }
+      }
+      return true;
+    }
+
+    function filterFeed() {
+      const q = document.getElementById('search-input').value.trim().toLowerCase();
+      const cards = document.querySelectorAll('.otp-card');
+      let visibleCount = 0;
+      cards.forEach(c => {
+        const num = c.dataset.num || '';
+        const otp = c.dataset.otp || '';
+        const country = c.dataset.country || '';
+        const account = c.dataset.account || '';
+        if (!q || num.includes(q) || otp.includes(q) || country.includes(q) || account.includes(q)) {
+          c.style.display = '';
+          visibleCount++;
+        } else {
+          c.style.display = 'none';
+        }
+      });
+      const empty = document.getElementById('empty-state');
+      if (empty) {
+        empty.style.display = (visibleCount === 0 && cards.length > 0) ? 'block' : 'none';
+        if (visibleCount === 0 && cards.length > 0) {
+          empty.querySelector('h3').textContent = 'No matching OTP found';
+          empty.querySelector('p').textContent = 'Try another phone number or code';
+        }
+      }
+    }
+
+    // Manual Fast Refresh button
+    function manualRefresh() {
+      const icon = document.getElementById('refresh-icon');
+      if (icon) icon.classList.add('spin');
+
+      fetch('/api/recent-otps?refresh=1')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.otps && Array.isArray(data.otps)) {
+            const list = [...data.otps].reverse();
+            let addedCount = 0;
+            list.forEach(item => {
+              if (addOtpItem(item, true)) {
+                addedCount++;
+              }
+            });
+            showToast(`✓ রিফ্রেশ সম্পন্ন! (মোট ${otpsList.length} টি ওটিপি)`);
+          }
+        })
+        .catch(err => {
+          console.error('Refresh error:', err);
+          showToast('⚠️ রিফ্রেশ করতে সমস্যা হয়েছে');
+        })
+        .finally(() => {
+          setTimeout(() => {
+            if (icon) icon.classList.remove('spin');
+          }, 600);
+        });
+    }
+
+    // Connect Server-Sent Events (SSE) Stream
+    function connectSSE() {
+      const statusBadge = document.getElementById('connection-status');
+      const statusText = document.getElementById('status-text');
+
+      statusBadge.className = 'status-badge';
+      statusText.textContent = 'Connecting...';
+
+      const evtSource = new EventSource('/api/stream');
+
+      evtSource.onopen = function() {
+        statusBadge.className = 'status-badge';
+        statusText.textContent = 'LIVE (0ms)';
+      };
+
+      evtSource.onmessage = function(e) {
+        if (!e.data || e.data.trim() === ': connected') return;
+        try {
+          const item = JSON.parse(e.data);
+          addOtpItem(item, true);
+        } catch (err) {
+          console.error('Error parsing SSE data:', err);
+        }
+      };
+
+      evtSource.onerror = function() {
+        statusBadge.className = 'status-badge disconnected';
+        statusText.textContent = 'Reconnecting...';
+        evtSource.close();
+        setTimeout(connectSSE, 2000);
+      };
+    }
+
+    // Initial load: fetch recent OTPs and initialize auto-refresh
+    function loadInitialData() {
+      updateAutoRefreshUI();
+
+      fetch('/api/recent-otps')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.otps && Array.isArray(data.otps)) {
+            const list = [...data.otps].reverse();
+            list.forEach(item => addOtpItem(item, false));
+          }
+        })
+        .catch(err => console.error('Failed to load recent OTPs:', err))
+        .finally(() => {
+          connectSSE();
+          if (autoRefreshEnabled) {
+            startAutoRefresh();
+          }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', loadInitialData);
+  </script>
+</body>
+</html>
