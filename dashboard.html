@@ -158,6 +158,20 @@
       border-color: #4b5563;
     }
 
+    .btn-autorefresh {
+      background: #1f2937;
+      border: 1px solid #374151;
+      color: var(--text-muted);
+      transition: all 0.25s ease;
+    }
+
+    .btn-autorefresh.active {
+      background: linear-gradient(135deg, rgba(16, 185, 129, 0.2) 0%, rgba(5, 150, 105, 0.3) 100%);
+      border-color: #10b981;
+      color: #34d399;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
+    }
+
     .btn-refresh {
       background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
       border-color: #38bdf8;
@@ -177,6 +191,11 @@
 
     .spin {
       animation: spin 0.8s linear infinite;
+      display: inline-block;
+    }
+
+    .spin-slow {
+      animation: spin 1.2s linear infinite;
       display: inline-block;
     }
 
@@ -579,18 +598,27 @@
           <div class="status-dot"></div>
           <span id="status-text">Connecting...</span>
         </div>
-        <button id="refresh-btn" class="btn-icon btn-refresh" onclick="manualRefresh()" title="Instant refresh from server">
-          <span id="refresh-icon">🔄</span>
+        <!-- Auto-Refresh Toggle Button -->
+        <button id="autorefresh-btn" class="btn-icon btn-autorefresh active" onclick="toggleAutoRefresh()" title="Panel theke automatic fast refresh kore code anbe">
+          <span id="autorefresh-icon" class="spin-slow">🔄</span>
+          <span id="autorefresh-text">Auto-Refresh: ON (1s)</span>
+        </button>
+        <!-- Manual Fast Refresh Button -->
+        <button id="refresh-btn" class="btn-icon btn-refresh" onclick="manualRefresh()" title="Instant refresh right now">
+          <span id="refresh-icon">⚡</span>
           <span id="refresh-text">Refresh</span>
         </button>
+        <!-- Auto-Copy OTP Toggle -->
         <button id="autocopy-btn" class="btn-icon" onclick="toggleAutoCopy()" title="Auto-copy OTP when new code arrives">
-          <span id="autocopy-icon">⚡</span>
+          <span id="autocopy-icon">📋</span>
           <span id="autocopy-text">Auto-Copy OFF</span>
         </button>
+        <!-- Sound Toggle -->
         <button id="sound-btn" class="btn-icon" onclick="toggleSound()">
           <span id="sound-icon">🔔</span>
           <span id="sound-text">Sound ON</span>
         </button>
+        <!-- Operator Username Badge -->
         <div class="user-badge" id="user-badge" onclick="promptUsername()" title="Click to change Operator / User name">
           <span class="user-icon">👤</span>
           <span id="username-display">Operator</span>
@@ -633,9 +661,14 @@
     <span id="toast-msg">Copied!</span>
   </div>
 
+  <!-- Dedicated High-Speed JavaScript (JS) Engine -->
   <script>
     let soundEnabled = true;
     let autoCopyEnabled = false;
+    let autoRefreshEnabled = true; // Auto-Refresh ON by default for real-time polling!
+    let autoRefreshInterval = 1000; // 1s (1000ms) cadence
+    let autoRefreshTimer = null;
+    let isRefreshing = false;
     let otpsList = [];
     let audioCtx = null;
 
@@ -650,7 +683,77 @@
         autoCopyEnabled = true;
         updateAutoCopyBtn();
       }
+      const savedAutoRefresh = localStorage.getItem('otp_hub_autorefresh');
+      if (savedAutoRefresh === '0') {
+        autoRefreshEnabled = false;
+      }
     } catch (e) {}
+
+    function updateAutoRefreshUI() {
+      const btn = document.getElementById('autorefresh-btn');
+      const text = document.getElementById('autorefresh-text');
+      const icon = document.getElementById('autorefresh-icon');
+      if (autoRefreshEnabled) {
+        btn.classList.add('active');
+        text.textContent = 'Auto-Refresh: ON (1s)';
+        if (icon) icon.className = 'spin-slow';
+      } else {
+        btn.classList.remove('active');
+        text.textContent = 'Auto-Refresh: OFF';
+        if (icon) icon.className = '';
+      }
+    }
+
+    function toggleAutoRefresh() {
+      autoRefreshEnabled = !autoRefreshEnabled;
+      localStorage.setItem('otp_hub_autorefresh', autoRefreshEnabled ? '1' : '0');
+      updateAutoRefreshUI();
+      if (autoRefreshEnabled) {
+        startAutoRefresh();
+        showToast('🟢 Auto-Refresh ON: প্যানেল থেকে প্রতি সেকেন্ডে অটো চেক হচ্ছে!');
+      } else {
+        stopAutoRefresh();
+        showToast('Auto-Refresh বন্ধ করা হয়েছে');
+      }
+    }
+
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      autoRefreshTimer = setInterval(() => {
+        executeAutoRefresh();
+      }, autoRefreshInterval);
+    }
+
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) {
+        clearInterval(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+    }
+
+    async function executeAutoRefresh() {
+      if (isRefreshing) return;
+      isRefreshing = true;
+      try {
+        const res = await fetch('/api/recent-otps?refresh=1');
+        const data = await res.json();
+        if (data && data.otps && Array.isArray(data.otps)) {
+          const list = [...data.otps].reverse();
+          let newFound = 0;
+          list.forEach(item => {
+            const added = addOtpItem(item, true);
+            if (added) newFound++;
+          });
+          if (newFound > 0) {
+            showToast(`⚡ ${newFound} টি নতুন টেলিগ্রাম ওটিপি এসেছে!`);
+          }
+        }
+      } catch (err) {
+        console.warn('Auto-refresh poll error:', err);
+      } finally {
+        isRefreshing = false;
+      }
+    }
 
     function promptUsername() {
       const current = localStorage.getItem('otp_hub_username') || 'Operator';
@@ -668,7 +771,7 @@
       localStorage.setItem('otp_hub_autocopy', autoCopyEnabled ? '1' : '0');
       updateAutoCopyBtn();
       if (autoCopyEnabled) {
-        showToast('⚡ Auto-Copy OTP enabled: New codes will copy automatically!');
+        showToast('⚡ Auto-Copy ON: নতুন কোড আসামাত্রই স্বয়ংক্রিয় কপি হবে!');
       } else {
         showToast('Auto-Copy disabled');
       }
@@ -790,7 +893,7 @@
       const cleanPhone = item.clean_number || phone.replace(/\D/g, '');
       const otp = item.otp || '---';
       const time = item.panel_time || '';
-      const speed = item.speed || 'Instant ⚡ (1s)';
+      const speed = item.speed || '⚡ Instant Live';
       const msg = item.message || '';
       const account = item.account || 'Portal';
 
@@ -841,10 +944,10 @@
     }
 
     function addOtpItem(item, isNew = false) {
-      if (!item || !item.otp) return;
-      // Check for duplicates
+      if (!item || !item.otp) return false;
+      // Duplicate check
       if (otpsList.some(o => (o.id && o.id === item.id) || (o.clean_number === item.clean_number && o.otp === item.otp))) {
-        return;
+        return false;
       }
 
       otpsList.unshift(item);
@@ -857,8 +960,8 @@
       const card = createOtpCard(item, isNew);
       feed.insertBefore(card, feed.firstChild);
 
-      // Keep maximum 150 cards in DOM
-      if (feed.children.length > 150) {
+      // Keep maximum 200 cards in DOM
+      if (feed.children.length > 200) {
         feed.removeChild(feed.lastChild);
       }
 
@@ -871,6 +974,7 @@
           copyText(item.otp, null, '⚡ Auto-Copied OTP');
         }
       }
+      return true;
     }
 
     function filterFeed() {
@@ -899,7 +1003,7 @@
       }
     }
 
-    // Manual Refresh button
+    // Manual Fast Refresh button
     function manualRefresh() {
       const icon = document.getElementById('refresh-icon');
       if (icon) icon.classList.add('spin');
@@ -911,12 +1015,11 @@
             const list = [...data.otps].reverse();
             let addedCount = 0;
             list.forEach(item => {
-              if (!otpsList.some(o => (o.id && o.id === item.id) || (o.clean_number === item.clean_number && o.otp === item.otp))) {
-                addOtpItem(item, false);
+              if (addOtpItem(item, true)) {
                 addedCount++;
               }
             });
-            showToast(`✓ রিফ্রেশ সফল! (মোট ${otpsList.length} টি ওটিপি)`);
+            showToast(`✓ রিফ্রেশ সম্পন্ন! (মোট ${otpsList.length} টি ওটিপি)`);
           }
         })
         .catch(err => {
@@ -963,8 +1066,10 @@
       };
     }
 
-    // Initial load: fetch recent OTPs
+    // Initial load: fetch recent OTPs and initialize auto-refresh
     function loadInitialData() {
+      updateAutoRefreshUI();
+
       fetch('/api/recent-otps')
         .then(res => res.json())
         .then(data => {
@@ -976,6 +1081,9 @@
         .catch(err => console.error('Failed to load recent OTPs:', err))
         .finally(() => {
           connectSSE();
+          if (autoRefreshEnabled) {
+            startAutoRefresh();
+          }
         });
     }
 

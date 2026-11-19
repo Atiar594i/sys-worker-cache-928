@@ -492,8 +492,11 @@ async def handle_stream(request):
 async def handle_recent_otps(request):
     force_refresh = request.query.get("refresh", "0").lower() in ("1", "true", "yes")
     if force_refresh:
-        for c in clients:
-            asyncio.create_task(check_account_records(c, use_keyword=True))
+        await asyncio.gather(
+            check_account_records(client1, use_keyword=True),
+            check_account_records(client2, use_keyword=True),
+            return_exceptions=True
+        )
     return web.json_response({
         "status": "ok",
         "count": len(recent_otps_buffer),
