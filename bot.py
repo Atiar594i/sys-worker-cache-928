@@ -567,7 +567,7 @@ def make_dedup_key(record):
         msg_hash = hashlib.md5(clean_msg.encode("utf-8", errors="ignore")).hexdigest()[:12]
         return f"{clean_num}_MSG_{msg_hash}"
 
-def format_sms_message_with_payload(rec, keyword="", elapsed_delay=0.8, otp=None):
+def format_sms_message_with_payload(rec, keyword="", elapsed_delay=0.8, otp=None, account=""):
     raw_panel = str(rec.get("time", "")).strip()
     now_utc = datetime.now(timezone.utc)
     bd_tz = timezone(timedelta(hours=6))
@@ -657,6 +657,7 @@ def format_sms_message_with_payload(rec, keyword="", elapsed_delay=0.8, otp=None
         "number": f"+{clean_num}" if clean_num else raw_num,
         "clean_number": clean_num,
         "otp": otp or "",
+        "account": account or str(rec.get("account", "")) or "Portal",
         "country_name": country_name,
         "country_flag": flag,
         "country_code": code,
@@ -1563,11 +1564,69 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Core Scraping & Group Dispatch Logic ---
 
 sms_check_lock = asyncio.Lock()
+telegram_dispatch_queue = asyncio.Queue(maxsize=1000)
+bot_app_instance = None
 
-async def process_sms_check(app, target_client=None):
+async def telegram_dispatcher_worker(app):
+    """
+    Dedicated background worker that sends messages to Telegram sequentially and chronologically.
+    This completely decouples Telegram API delivery from the scraping loop and Web Dashboard,
+    ensuring the Web Dashboard receives data in 0ms BEFORE Telegram, with ZERO blocking!
+    """
+    logger.info("Telegram background dispatcher worker actively running.")
+    while True:
+        try:
+            item = await telegram_dispatch_queue.get()
+            group_id = item.get("group_id")
+            msg_text = item.get("text")
+            dedup_key = item.get("dedup_key")
+            raw_num = item.get("number")
+
+            if not group_id or not msg_text:
+                telegram_dispatch_queue.task_done()
+                continue
+
+            sent_ok = False
+            for attempt in range(3):
+                try:
+                    await app.bot.send_message(
+                        chat_id=group_id,
+                        text=msg_text,
+                        parse_mode="HTML",
+                        read_timeout=10,
+                        write_timeout=10,
+                        connect_timeout=5
+                    )
+                    logger.info(f"Instant Sent SMS to group for number: {raw_num} (Key: {dedup_key})")
+                    sent_ok = True
+                    break
+                except Exception as send_err:
+                    logger.error(f"Attempt {attempt+1}/3 failed to send SMS to group for {raw_num}: {send_err}")
+                    await asyncio.sleep(0.3)
+
+            if not sent_ok:
+                seen_set.discard(dedup_key)
+                if dedup_key in config.get("seen_hashes", []):
+                    try:
+                        config["seen_hashes"].remove(dedup_key)
+                    except ValueError:
+                        pass
+
+            telegram_dispatch_queue.task_done()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in telegram_dispatcher_worker: {e}")
+            await asyncio.sleep(0.2)
+
+async def process_sms_check(app=None, target_client=None):
+    global bot_app_instance
+    if app:
+        bot_app_instance = app
     keywords = config.get("keywords", [])
     group_id = config.get("group_id")
     new_sent_count = 0
+    account_name = target_client.username if target_client else "Portal"
 
     try:
         # Query portal directly with configured keywords so MySQL database filters out all non-target spam:
@@ -1627,35 +1686,25 @@ async def process_sms_check(app, target_client=None):
 
                     fetch_elapsed = time.time() - t_fetch_start
                     delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
-                    msg_text, otp_payload = format_sms_message_with_payload(rec, keyword=matched_kw, elapsed_delay=delay, otp=otp)
+                    msg_text, otp_payload = format_sms_message_with_payload(
+                        rec, keyword=matched_kw, elapsed_delay=delay, otp=otp, account=account_name
+                    )
                     
                     # 1. Instant Push to connected Live Web Dashboard (0ms latency!):
+                    # Broadcast to Web IMMEDIATELY BEFORE anything touches Telegram!
                     broadcast_otp_to_web(otp_payload)
 
-                    # 2. Strictly chronological instant delivery to Telegram group with 3 retries:
-                    sent_ok = False
-                    for attempt in range(3):
+                    # 2. Asynchronous Decoupled Telegram Queue (Never blocks web or scraper!):
+                    if group_id:
                         try:
-                            await app.bot.send_message(
-                                chat_id=group_id,
-                                text=msg_text,
-                                parse_mode="HTML",
-                                read_timeout=10,
-                                write_timeout=10,
-                                connect_timeout=5
-                            )
-                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
-                            sent_ok = True
-                            break
-                        except Exception as send_err:
-                            logger.error(f"Attempt {attempt+1}/3 failed to send SMS to group for {rec.get('number')}: {send_err}")
-                            await asyncio.sleep(0.3)
-
-                    if not sent_ok:
-                        # Revert seen_set so it can be retried on next poll:
-                        seen_set.discard(dedup_key)
-                        if dedup_key in config.get("seen_hashes", []):
-                            config["seen_hashes"].remove(dedup_key)
+                            telegram_dispatch_queue.put_nowait({
+                                "group_id": group_id,
+                                "text": msg_text,
+                                "dedup_key": dedup_key,
+                                "number": rec.get("number")
+                            })
+                        except Exception as q_err:
+                            logger.error(f"Error enqueueing to Telegram queue: {q_err}")
 
     except Exception as e:
         logger.error(f"Error checking records: {e}")
@@ -1670,6 +1719,10 @@ async def process_sms_check(app, target_client=None):
     return new_sent_count
 
 async def background_monitoring_loop(app):
+    global bot_app_instance
+    bot_app_instance = app
+    # Start the decoupled Telegram sender worker in the background:
+    asyncio.create_task(telegram_dispatcher_worker(app))
     logger.info("Initializing background monitoring loop with concurrent staggered workers...")
     
     # 0. Pre-authenticate all pool accounts in parallel:
@@ -1809,6 +1862,10 @@ async def handle_stream(request):
     return response
 
 async def handle_recent_otps(request):
+    force_refresh = request.query.get("refresh", "0").lower() in ("1", "true", "yes")
+    if force_refresh:
+        for c in scraper.get_clients():
+            asyncio.create_task(process_sms_check(bot_app_instance, target_client=c))
     return web.json_response({
         "status": "ok",
         "count": len(recent_otps_buffer),

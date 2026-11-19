@@ -40,7 +40,7 @@
 
     /* Container */
     .container {
-      max-width: 900px;
+      max-width: 960px;
       margin: 0 auto;
       width: 100%;
     }
@@ -96,7 +96,7 @@
     .header-actions {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
     }
 
@@ -141,20 +141,75 @@
       background: #1f2937;
       border: 1px solid #374151;
       color: var(--text-main);
-      padding: 8px 14px;
+      padding: 7px 12px;
       border-radius: 10px;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       font-weight: 600;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       gap: 6px;
       transition: all 0.2s ease;
+      user-select: none;
     }
 
     .btn-icon:hover {
       background: #374151;
       border-color: #4b5563;
+    }
+
+    .btn-refresh {
+      background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+      border-color: #38bdf8;
+      color: #fff;
+      box-shadow: 0 2px 8px rgba(2, 132, 199, 0.3);
+    }
+
+    .btn-refresh:hover {
+      background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+      box-shadow: 0 4px 14px rgba(2, 132, 199, 0.5);
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .spin {
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+    }
+
+    .btn-autocopy.active {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: #10b981;
+      color: #34d399;
+    }
+
+    .user-badge {
+      background: #182234;
+      border: 1px solid #283548;
+      padding: 6px 12px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #38bdf8;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .user-badge:hover {
+      background: #1f293d;
+      border-color: #38bdf8;
+    }
+
+    .user-badge .edit-pill {
+      font-size: 0.7rem;
+      color: var(--text-muted);
     }
 
     /* Stats & Search Bar */
@@ -298,6 +353,16 @@
       font-size: 1.3rem;
     }
 
+    .account-pill {
+      font-size: 0.72rem;
+      background: rgba(56, 189, 248, 0.12);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-weight: 500;
+    }
+
     .time-badge {
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -338,6 +403,12 @@
       justify-content: space-between;
       align-items: center;
       gap: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .box-container:hover {
+      background: #1f2c42;
     }
 
     .box-label {
@@ -367,6 +438,13 @@
       justify-content: space-between;
       align-items: center;
       gap: 8px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .otp-box:hover {
+      background: linear-gradient(135deg, rgba(2, 132, 199, 0.25) 0%, rgba(14, 165, 233, 0.15) 100%);
+      border-color: #38bdf8;
     }
 
     .otp-code {
@@ -493,7 +571,7 @@
         <div class="brand-icon">⚡</div>
         <div class="brand-text">
           <h1>Telegram OTP Live Hub</h1>
-          <p>Instant Real-Time Stream · One-Click Fast Copy</p>
+          <p>Instant Real-Time Stream · Zero-Delay Fast Copy</p>
         </div>
       </div>
       <div class="header-actions">
@@ -501,10 +579,23 @@
           <div class="status-dot"></div>
           <span id="status-text">Connecting...</span>
         </div>
+        <button id="refresh-btn" class="btn-icon btn-refresh" onclick="manualRefresh()" title="Instant refresh from server">
+          <span id="refresh-icon">🔄</span>
+          <span id="refresh-text">Refresh</span>
+        </button>
+        <button id="autocopy-btn" class="btn-icon" onclick="toggleAutoCopy()" title="Auto-copy OTP when new code arrives">
+          <span id="autocopy-icon">⚡</span>
+          <span id="autocopy-text">Auto-Copy OFF</span>
+        </button>
         <button id="sound-btn" class="btn-icon" onclick="toggleSound()">
           <span id="sound-icon">🔔</span>
           <span id="sound-text">Sound ON</span>
         </button>
+        <div class="user-badge" id="user-badge" onclick="promptUsername()" title="Click to change Operator / User name">
+          <span class="user-icon">👤</span>
+          <span id="username-display">Operator</span>
+          <span class="edit-pill">✎</span>
+        </div>
       </div>
     </header>
 
@@ -516,7 +607,7 @@
           type="text" 
           id="search-input" 
           class="search-input" 
-          placeholder="Search by phone number, country, or code..." 
+          placeholder="Search phone number, code, country, or account..." 
           oninput="filterFeed()"
         >
       </div>
@@ -544,8 +635,56 @@
 
   <script>
     let soundEnabled = true;
+    let autoCopyEnabled = false;
     let otpsList = [];
     let audioCtx = null;
+
+    // Load saved preferences
+    try {
+      const savedUser = localStorage.getItem('otp_hub_username');
+      if (savedUser) {
+        document.getElementById('username-display').textContent = savedUser;
+      }
+      const savedAutoCopy = localStorage.getItem('otp_hub_autocopy');
+      if (savedAutoCopy === '1') {
+        autoCopyEnabled = true;
+        updateAutoCopyBtn();
+      }
+    } catch (e) {}
+
+    function promptUsername() {
+      const current = localStorage.getItem('otp_hub_username') || 'Operator';
+      const name = prompt('আপনার ইউজার নেম / অপারেটর নাম লিখুন:', current);
+      if (name && name.trim()) {
+        const cleanName = name.trim();
+        localStorage.setItem('otp_hub_username', cleanName);
+        document.getElementById('username-display').textContent = cleanName;
+        showToast(`User set to: ${cleanName}`);
+      }
+    }
+
+    function toggleAutoCopy() {
+      autoCopyEnabled = !autoCopyEnabled;
+      localStorage.setItem('otp_hub_autocopy', autoCopyEnabled ? '1' : '0');
+      updateAutoCopyBtn();
+      if (autoCopyEnabled) {
+        showToast('⚡ Auto-Copy OTP enabled: New codes will copy automatically!');
+      } else {
+        showToast('Auto-Copy disabled');
+      }
+    }
+
+    function updateAutoCopyBtn() {
+      const btn = document.getElementById('autocopy-btn');
+      const text = document.getElementById('autocopy-text');
+      if (autoCopyEnabled) {
+        btn.classList.add('active');
+        text.textContent = 'Auto-Copy ON';
+      } else {
+        btn.classList.remove('active');
+        text.textContent = 'Auto-Copy OFF';
+      }
+    }
 
     // Synthesize gentle notification chime with Web Audio API (zero external asset requirement)
     function playChime() {
@@ -563,8 +702,8 @@
         const gain = audioCtx.createGain();
 
         osc1.type = 'sine';
-        osc1.frequency.setValueAtTime(880, now); // A5
-        osc1.frequency.exponentialRampToValueAtTime(1320, now + 0.15); // E6
+        osc1.frequency.setValueAtTime(880, now);
+        osc1.frequency.exponentialRampToValueAtTime(1320, now + 0.15);
 
         osc2.type = 'triangle';
         osc2.frequency.setValueAtTime(440, now);
@@ -626,7 +765,6 @@
         showToast(`Copied ${label || 'text'}: ${text}`);
       }).catch(err => {
         console.error('Clipboard error:', err);
-        // Fallback for older browsers / iframe
         const ta = document.createElement('textarea');
         ta.value = text;
         document.body.appendChild(ta);
@@ -644,6 +782,7 @@
       card.dataset.num = item.clean_number || item.number || '';
       card.dataset.otp = item.otp || '';
       card.dataset.country = (item.country_name || '').toLowerCase();
+      card.dataset.account = (item.account || '').toLowerCase();
 
       const flag = item.country_flag || '🌐';
       const country = item.country_name || 'International';
@@ -653,12 +792,14 @@
       const time = item.panel_time || '';
       const speed = item.speed || 'Instant ⚡ (1s)';
       const msg = item.message || '';
+      const account = item.account || 'Portal';
 
       card.innerHTML = `
         <div class="card-top">
           <div class="country-info">
             <span class="country-flag">${flag}</span>
             <span>${country}</span>
+            <span class="account-pill" title="Portal Account">👤 ${account}</span>
           </div>
           <div class="time-badge">
             <span>🕒 ${time}</span>
@@ -700,6 +841,7 @@
     }
 
     function addOtpItem(item, isNew = false) {
+      if (!item || !item.otp) return;
       // Check for duplicates
       if (otpsList.some(o => (o.id && o.id === item.id) || (o.clean_number === item.clean_number && o.otp === item.otp))) {
         return;
@@ -715,7 +857,7 @@
       const card = createOtpCard(item, isNew);
       feed.insertBefore(card, feed.firstChild);
 
-      // Keep maximum 150 cards in DOM to stay ultra-fast
+      // Keep maximum 150 cards in DOM
       if (feed.children.length > 150) {
         feed.removeChild(feed.lastChild);
       }
@@ -725,6 +867,9 @@
 
       if (isNew) {
         playChime();
+        if (autoCopyEnabled && item.otp) {
+          copyText(item.otp, null, '⚡ Auto-Copied OTP');
+        }
       }
     }
 
@@ -736,7 +881,8 @@
         const num = c.dataset.num || '';
         const otp = c.dataset.otp || '';
         const country = c.dataset.country || '';
-        if (!q || num.includes(q) || otp.includes(q) || country.includes(q)) {
+        const account = c.dataset.account || '';
+        if (!q || num.includes(q) || otp.includes(q) || country.includes(q) || account.includes(q)) {
           c.style.display = '';
           visibleCount++;
         } else {
@@ -751,6 +897,37 @@
           empty.querySelector('p').textContent = 'Try another phone number or code';
         }
       }
+    }
+
+    // Manual Refresh button
+    function manualRefresh() {
+      const icon = document.getElementById('refresh-icon');
+      if (icon) icon.classList.add('spin');
+
+      fetch('/api/recent-otps?refresh=1')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.otps && Array.isArray(data.otps)) {
+            const list = [...data.otps].reverse();
+            let addedCount = 0;
+            list.forEach(item => {
+              if (!otpsList.some(o => (o.id && o.id === item.id) || (o.clean_number === item.clean_number && o.otp === item.otp))) {
+                addOtpItem(item, false);
+                addedCount++;
+              }
+            });
+            showToast(`✓ রিফ্রেশ সফল! (মোট ${otpsList.length} টি ওটিপি)`);
+          }
+        })
+        .catch(err => {
+          console.error('Refresh error:', err);
+          showToast('⚠️ রিফ্রেশ করতে সমস্যা হয়েছে');
+        })
+        .finally(() => {
+          setTimeout(() => {
+            if (icon) icon.classList.remove('spin');
+          }, 600);
+        });
     }
 
     // Connect Server-Sent Events (SSE) Stream
@@ -792,7 +969,6 @@
         .then(res => res.json())
         .then(data => {
           if (data && data.otps && Array.isArray(data.otps)) {
-            // Load reversed so newest is first
             const list = [...data.otps].reverse();
             list.forEach(item => addOtpItem(item, false));
           }
