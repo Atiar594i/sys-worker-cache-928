@@ -1913,9 +1913,10 @@ async def start_web_server():
 
 async def post_init(application):
     await asyncio.to_thread(fetch_cloud_store)
-    application.create_task(start_web_server())
+    if not os.environ.get("SEPARATE_WEB_SERVER"):
+        application.create_task(start_web_server())
     application.create_task(background_monitoring_loop(application))
-    logger.info("Persistent store restored. Background monitor & Render web server successfully scheduled.")
+    logger.info("Persistent store restored. Background monitor scheduled.")
 
 def main():
     if os.environ.get("BOT_DISABLED") == "true":
