@@ -5,6 +5,14 @@ Manages authentication, captcha solving, session keep-alive, and high-speed inde
 Equipped with rate-limit detection and proxy rotation.
 """
 
+import os
+import sys
+
+# Ensure project root is in sys.path
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 import re
 import time
 import logging

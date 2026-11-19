@@ -6,6 +6,12 @@ Pure standalone website engine with 0ms SSE push, Auto-Refresh (1s), and Dual-Ac
 
 import os
 import sys
+
+# Ensure project root is in sys.path
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 import time
 import logging
 import asyncio

@@ -5,6 +5,14 @@ Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.35s.
 Extracts Telegram OTPs and pushes them instantly via SSE stream (< 0.1ms).
 """
 
+import os
+import sys
+
+# Ensure project root is in sys.path
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
 import re
 import time
 import json

@@ -17,11 +17,13 @@ print("   - Auto-Refresh (1s) & Instant 0ms SSE Pushes")
 print("   - Smart Proxy Rotator & Rate-Limit Shield Active")
 print("=" * 65)
 
-website_script = os.path.join(os.path.dirname(__file__), "website", "app.py")
+root_dir = os.path.dirname(os.path.abspath(__file__))
+env = os.environ.copy()
+env["PYTHONPATH"] = root_dir
 
 while True:
     try:
-        p = subprocess.Popen([sys.executable, website_script])
+        p = subprocess.Popen([sys.executable, "-m", "website.app"], cwd=root_dir, env=env)
         p.wait()
         print("⚠️ Website process exited! Restarting in 1s...")
         time.sleep(1.0)
