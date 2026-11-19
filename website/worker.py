@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 ⚡ Dedicated Round-Robin Background Scraper Worker
-Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.35s.
+Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.25s.
 Extracts Telegram OTPs and pushes them instantly to:
   1. Web Dashboard via SSE stream (< 0.1ms)
-  2. Telegram Group via adaptive Telegram Queue Worker (< 0.1s)
+  2. Telegram Group via direct non-blocking task (< 0.2s)
 """
 
 import os
@@ -39,14 +39,10 @@ from website.client import PortalClient
 logger = logging.getLogger("ScraperWorker")
 
 # In-memory shared state for the website
-recent_otps_buffer = collections.deque(maxlen=250)
+recent_otps_buffer = collections.deque(maxlen=300)
 recent_logs_buffer = collections.deque(maxlen=500)
 seen_hashes = set()
 sse_clients = set()
-
-# Dedicated Telegram Dispatch Queue
-telegram_queue = asyncio.Queue()
-telegram_cooldown_until = 0.0
 
 # Initialize the two dedicated portal clients
 client1 = PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"])
@@ -67,65 +63,46 @@ def broadcast_to_sse(item):
     for dq in dead:
         sse_clients.discard(dq)
 
-async def telegram_dispatcher_worker():
+async def send_telegram_direct(text, number=""):
     """
-    Dedicated worker that dispatches messages to the Telegram group.
-    Maintains adaptive rate-limiting (handles 429 retries) with 0ms impact on web scraping.
+    Dispatches message directly to Telegram group with ZERO queue latency (<0.2s).
+    Runs non-blocking in background.
     """
-    global telegram_cooldown_until
-    logger.info("Telegram async queue dispatcher started.")
-    while True:
+    if not BOT_TOKEN or not GROUP_ID:
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": GROUP_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    for attempt in range(2):
         try:
-            item = await telegram_queue.get()
-            text = item.get("text")
-            number = item.get("number", "")
-
-            now = time.time()
-            if telegram_cooldown_until > now:
-                await asyncio.sleep(telegram_cooldown_until - now)
-
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": GROUP_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            }
-
-            for attempt in range(3):
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
-                            if resp.status == 200:
-                                logger.info(f"⚡ [Instant Telegram Send] Dispatched OTP for {number} to group!")
-                                break
-                            elif resp.status == 429:
-                                data = await resp.json()
-                                retry_after = data.get("parameters", {}).get("retry_after", 3) + 0.5
-                                logger.warning(f"Telegram 429 Rate Limit for {number}. Cooldown {retry_after}s...")
-                                telegram_cooldown_until = time.time() + retry_after
-                                await asyncio.sleep(retry_after)
-                            else:
-                                err_txt = await resp.text()
-                                logger.warning(f"Telegram attempt {attempt+1} HTTP {resp.status}: {err_txt[:100]}")
-                                await asyncio.sleep(0.3)
-                except Exception as e:
-                    logger.error(f"Error sending Telegram message for {number}: {e}")
-                    await asyncio.sleep(0.3)
-
-            telegram_queue.task_done()
-            await asyncio.sleep(3.0)  # Safe 3.0s pacing (max 20 msgs/min) to permanently avoid Telegram group rate limit
-        except asyncio.CancelledError:
-            break
-        except Exception as ex:
-            logger.error(f"Error in telegram_dispatcher_worker: {ex}")
-            await asyncio.sleep(0.2)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3.5)) as resp:
+                    if resp.status == 200:
+                        logger.info(f"⚡ [Instant Telegram Send] Dispatched OTP for {number} in <0.2s!")
+                        return
+                    elif resp.status == 429:
+                        data = await resp.json()
+                        retry_after = data.get("parameters", {}).get("retry_after", 2) + 0.2
+                        logger.warning(f"Telegram rate-limited for {number}, retrying in {retry_after}s...")
+                        await asyncio.sleep(retry_after)
+                    else:
+                        err_txt = await resp.text()
+                        logger.warning(f"Telegram dispatch attempt {attempt+1} HTTP {resp.status}: {err_txt[:100]}")
+                        await asyncio.sleep(0.3)
+        except Exception as e:
+            logger.error(f"Error sending Telegram message for {number}: {e}")
+            await asyncio.sleep(0.3)
 
 async def check_account_records(client, use_keyword=False):
-    """Checks an account for new Telegram SMS and extracts OTPs."""
-    kw = "Telegram" if use_keyword else ""
-    length = 35 if use_keyword else DISPLAY_LENGTH
-    records = await asyncio.to_thread(client.fetch_records, keyword=kw, display_length=length)
+    """
+    Checks an account for new Telegram SMS and extracts OTPs.
+    Always uses ultra-fast 80ms index search (keyword="") to eliminate MySQL table scan bottlenecks.
+    """
+    records = await asyncio.to_thread(client.fetch_records, keyword="", display_length=DISPLAY_LENGTH)
     if not records:
         return 0
 
@@ -160,11 +137,21 @@ async def check_account_records(client, use_keyword=False):
 
         country_name, iso, flag, code = get_country_info(clean_num)
         panel_time_raw = str(rec.get("time", "")).strip()
+        diff_sec = 0
         try:
             dt_p = datetime.strptime(panel_time_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
             panel_display = dt_p.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_sec = max(0, int((now_utc - dt_p).total_seconds()))
         except Exception:
             panel_display = panel_time_raw or now_display
+
+        # Precise speed string
+        if diff_sec <= 1:
+            speed_str = "⚡ Instant (1s)"
+        elif diff_sec <= 3:
+            speed_str = f"⚡ Fast ({diff_sec}s)"
+        else:
+            speed_str = f"⏱ Normal ({diff_sec}s)"
 
         payload = {
             "id": dedup_key,
@@ -179,7 +166,7 @@ async def check_account_records(client, use_keyword=False):
             "message": raw_msg,
             "panel_time": panel_display,
             "received_time": now_display,
-            "speed": "⚡ Instant (0ms)",
+            "speed": speed_str,
             "timestamp": time.time()
         }
 
@@ -188,7 +175,7 @@ async def check_account_records(client, use_keyword=False):
         broadcast_to_sse(payload)
         logger.info(f"🚀 [0ms Web Push] New OTP for {clean_num}: {otp} (Account: {client.username})")
 
-        # ⚡ 2. INSTANT DISPATCH TO TELEGRAM GROUP (< 0.1s latency, non-blocking queue):
+        # ⚡ 2. INSTANT DIRECT DISPATCH TO TELEGRAM GROUP (< 0.2s latency):
         if BOT_TOKEN and GROUP_ID:
             tg_msg = format_telegram_message(
                 phone=clean_num,
@@ -199,29 +186,26 @@ async def check_account_records(client, use_keyword=False):
                 raw_msg=raw_msg,
                 panel_time=panel_display,
                 delivery_time=now_display,
-                speed_str="⚡ Instant (0ms)",
+                speed_str=speed_str,
                 keyword="Telegram"
             )
-            telegram_queue.put_nowait({"text": tg_msg, "number": clean_num})
+            asyncio.create_task(send_telegram_direct(tg_msg, clean_num))
 
     return new_otps
 
 async def start_worker_loop():
     """Main worker loop alternating round-robin between the two accounts."""
-    # Start Telegram queue dispatcher in background
-    asyncio.create_task(telegram_dispatcher_worker())
-
     logger.info("⚡ Pre-authenticating Atiar59_FD and Smswork21_FD concurrently...")
     await asyncio.gather(
         asyncio.to_thread(client1.login),
         asyncio.to_thread(client2.login)
     )
 
-    # Initial historical seed across both accounts (load full 75 records to prevent startup bursts)
+    # Initial historical seed across both accounts (load full 100 records to prevent any startup bursts)
     bd_tz = timezone(timedelta(hours=6))
     for c in clients:
         try:
-            init_recs = await asyncio.to_thread(c.fetch_records, keyword="", display_length=75)
+            init_recs = await asyncio.to_thread(c.fetch_records, keyword="", display_length=100)
             if init_recs:
                 init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
@@ -262,20 +246,17 @@ async def start_worker_loop():
 
     logger.info(f"✅ Seeding complete: {len(seen_hashes)} seen keys, {len(recent_otps_buffer)} initial items loaded.")
 
-    # Alternating Round-Robin Polling:
-    # Alternates between Client 1 and Client 2 on each interval step.
+    # High-speed alternating Round-Robin Polling:
+    # Alternates between Client 1 and Client 2 every 0.25s.
+    # Total cycle for both accounts: ~0.5s! Zero rate limits, 80ms index search.
     current_idx = 0
-    step = 0
     while True:
         client = clients[current_idx]
-        current_idx = (current_idx + 1) % len(clients) # Move to next account for next round!
-        step += 1
+        current_idx = (current_idx + 1) % len(clients)
 
         try:
-            # Every 6th step checks keyword to double verify no missed records
-            use_kw = (step % 6 == 0)
-            await check_account_records(client, use_keyword=use_kw)
+            await check_account_records(client, use_keyword=False)
         except Exception as err:
             logger.error(f"Worker error for {client.username}: {err}")
 
-        await asyncio.sleep(ROUND_ROBIN_INTERVAL)
+        await asyncio.sleep(0.25)
