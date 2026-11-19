@@ -4,7 +4,7 @@
 Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.35s.
 Extracts Telegram OTPs and pushes them instantly to:
   1. Web Dashboard via SSE stream (< 0.1ms)
-  2. Telegram Group via non-blocking async Telegram Bot API (< 0.1s)
+  2. Telegram Group via adaptive Telegram Queue Worker (< 0.1s)
 """
 
 import os
@@ -44,6 +44,10 @@ recent_logs_buffer = collections.deque(maxlen=500)
 seen_hashes = set()
 sse_clients = set()
 
+# Dedicated Telegram Dispatch Queue
+telegram_queue = asyncio.Queue()
+telegram_cooldown_until = 0.0
+
 # Initialize the two dedicated portal clients
 client1 = PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"])
 client2 = PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"])
@@ -63,33 +67,59 @@ def broadcast_to_sse(item):
     for dq in dead:
         sse_clients.discard(dq)
 
-async def send_telegram_instant(text, number=""):
+async def telegram_dispatcher_worker():
     """
-    Sends message to Telegram group asynchronously with ZERO blocking (<0.1s).
-    Runs as an independent task so scraping and web push remain at 0ms latency.
+    Dedicated worker that dispatches messages to the Telegram group.
+    Maintains adaptive rate-limiting (handles 429 retries) with 0ms impact on web scraping.
     """
-    if not BOT_TOKEN or not GROUP_ID:
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": GROUP_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    for attempt in range(2):
+    global telegram_cooldown_until
+    logger.info("Telegram async queue dispatcher started.")
+    while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3.5)) as resp:
-                    if resp.status == 200:
-                        logger.info(f"⚡ [Instant Telegram Send] Dispatched OTP for {number} to group!")
-                        return
-                    else:
-                        err_txt = await resp.text()
-                        logger.warning(f"Telegram dispatch attempt {attempt+1} HTTP {resp.status}: {err_txt[:100]}")
-        except Exception as e:
-            logger.error(f"Error sending Telegram message for {number}: {e}")
-        await asyncio.sleep(0.2)
+            item = await telegram_queue.get()
+            text = item.get("text")
+            number = item.get("number", "")
+
+            now = time.time()
+            if telegram_cooldown_until > now:
+                await asyncio.sleep(telegram_cooldown_until - now)
+
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": GROUP_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }
+
+            for attempt in range(3):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+                            if resp.status == 200:
+                                logger.info(f"⚡ [Instant Telegram Send] Dispatched OTP for {number} to group!")
+                                break
+                            elif resp.status == 429:
+                                data = await resp.json()
+                                retry_after = data.get("parameters", {}).get("retry_after", 3) + 0.5
+                                logger.warning(f"Telegram 429 Rate Limit for {number}. Cooldown {retry_after}s...")
+                                telegram_cooldown_until = time.time() + retry_after
+                                await asyncio.sleep(retry_after)
+                            else:
+                                err_txt = await resp.text()
+                                logger.warning(f"Telegram attempt {attempt+1} HTTP {resp.status}: {err_txt[:100]}")
+                                await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.error(f"Error sending Telegram message for {number}: {e}")
+                    await asyncio.sleep(0.3)
+
+            telegram_queue.task_done()
+            await asyncio.sleep(0.05)  # Micro-spacing to keep Telegram happy
+        except asyncio.CancelledError:
+            break
+        except Exception as ex:
+            logger.error(f"Error in telegram_dispatcher_worker: {ex}")
+            await asyncio.sleep(0.2)
 
 async def check_account_records(client, use_keyword=False):
     """Checks an account for new Telegram SMS and extracts OTPs."""
@@ -158,7 +188,7 @@ async def check_account_records(client, use_keyword=False):
         broadcast_to_sse(payload)
         logger.info(f"🚀 [0ms Web Push] New OTP for {clean_num}: {otp} (Account: {client.username})")
 
-        # ⚡ 2. INSTANT DISPATCH TO TELEGRAM GROUP (< 0.1s latency, non-blocking):
+        # ⚡ 2. INSTANT DISPATCH TO TELEGRAM GROUP (< 0.1s latency, non-blocking queue):
         if BOT_TOKEN and GROUP_ID:
             tg_msg = format_telegram_message(
                 phone=clean_num,
@@ -172,23 +202,26 @@ async def check_account_records(client, use_keyword=False):
                 speed_str="⚡ Instant (0ms)",
                 keyword="Telegram"
             )
-            asyncio.create_task(send_telegram_instant(tg_msg, clean_num))
+            telegram_queue.put_nowait({"text": tg_msg, "number": clean_num})
 
     return new_otps
 
 async def start_worker_loop():
     """Main worker loop alternating round-robin between the two accounts."""
+    # Start Telegram queue dispatcher in background
+    asyncio.create_task(telegram_dispatcher_worker())
+
     logger.info("⚡ Pre-authenticating Atiar59_FD and Smswork21_FD concurrently...")
     await asyncio.gather(
         asyncio.to_thread(client1.login),
         asyncio.to_thread(client2.login)
     )
 
-    # Initial historical seed
+    # Initial historical seed across both accounts (load full 75 records to prevent startup bursts)
     bd_tz = timezone(timedelta(hours=6))
     for c in clients:
         try:
-            init_recs = await asyncio.to_thread(c.fetch_records, keyword="", display_length=40)
+            init_recs = await asyncio.to_thread(c.fetch_records, keyword="", display_length=75)
             if init_recs:
                 init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
