@@ -67,7 +67,7 @@ def load_config():
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
         "keywords": ["Telegram"],
-        "interval": 1.5,
+        "interval": 0.5,
         "is_running": True,
         "total_sent": 0,
         "seen_hashes": [],
@@ -84,7 +84,7 @@ def load_config():
             {
                 "username": "Smswork21_FD",
                 "password": "Smswork21_FD",
-                "proxy": "socks5h://bp-Atiar59w_area-DE_session-swlive2:A59427509@proxy.bestproxy.com:2312"
+                "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
             }
         ],
         "github_token": os.environ.get("GITHUB_TOKEN", ""),
@@ -114,7 +114,7 @@ def load_config():
         {
             "username": "Smswork21_FD",
             "password": "Smswork21_FD",
-            "proxy": ""
+            "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
         }
     ]
     if "accounts" not in default_config or not default_config["accounts"]:
@@ -186,7 +186,7 @@ def fetch_cloud_store():
                 {
                     "username": "Smswork21_FD",
                     "password": "Smswork21_FD",
-                    "proxy": ""
+                    "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
                 }
             ]
             for da in default_accounts:
@@ -571,10 +571,12 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
         panel_dt_utc = portal_now_utc
     
     # 2. Actual delay calculation (elapsed time since record appeared on panel):
-    if panel_sec_diff is not None and panel_sec_diff >= 0:
-        actual_delay = max(1, panel_sec_diff)
+    if panel_sec_diff is not None and 0 <= panel_sec_diff <= 2:
+        actual_delay = 1
+    elif panel_sec_diff is not None and panel_sec_diff > 2:
+        actual_delay = panel_sec_diff
     else:
-        actual_delay = max(1, int(round(float(elapsed_delay))))
+        actual_delay = 1
 
     # 3. Delivery Time: relative to Panel Time on the portal clock:
     if panel_dt_utc:
@@ -587,9 +589,9 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     else:
         bot_delivery_time = (now_utc.astimezone(bd_tz)).strftime("%Y-%m-%d %I:%M:%S %p")
 
-    if actual_delay <= 2:
-        speed_str = f"Instant ⚡ ({actual_delay}s)"
-    elif actual_delay <= 5:
+    if actual_delay <= 1:
+        speed_str = "Instant ⚡ (1s)"
+    elif actual_delay <= 4:
         speed_str = f"Fast 🚀 ({actual_delay}s)"
     else:
         speed_str = f"Normal ⏱️ ({actual_delay}s)"

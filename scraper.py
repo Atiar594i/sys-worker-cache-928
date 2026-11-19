@@ -18,6 +18,8 @@ class FlexSMSClient:
         self.password = password
         self.raw_proxy = proxy
         self.proxy = proxy
+        self.request_count_on_ip = 0
+        self.last_query_time = 0.0
         self._init_session()
         self.ajax_url = None
         self.is_logged_in = False
@@ -25,9 +27,29 @@ class FlexSMSClient:
         self.last_login_time = 0
         self.rate_limited_until = 0.0
         self.last_response_time = 0.0
-        self.server_clock_skew = 47.6
+        self.server_clock_skew = 49.3
         self.echo_counter = 0
         self.login_lock = threading.Lock()
+
+    def rotate_proxy_ip(self):
+        """Dynamically rotates residential proxy IP by altering BestProxy session tag."""
+        if not self.raw_proxy or "bp-Atiar59w" not in self.raw_proxy:
+            return
+        sess_id = uuid.uuid4().hex[:6]
+        if "_session-" in self.raw_proxy:
+            self.proxy = re.sub(r'_session-[^:@/]+', f'_session-{sess_id}', self.raw_proxy)
+        elif "_area-" in self.raw_proxy:
+            self.proxy = re.sub(r'(_area-[^:@/]+)', r'\1_session-' + sess_id, self.raw_proxy)
+        else:
+            self.proxy = self.raw_proxy + f"_session-{sess_id}"
+
+        if hasattr(self, 'session') and self.session:
+            self.session.proxies = {
+                'http': self.proxy,
+                'https': self.proxy
+            }
+        self.request_count_on_ip = 0
+        logger.info(f"Rotated BestProxy IP for {self.username} -> session {sess_id}")
 
     def _init_session(self):
         try:
@@ -49,6 +71,7 @@ class FlexSMSClient:
         else:
             self.proxy = self.raw_proxy
 
+        self.request_count_on_ip = 0
         if self.proxy:
             self.session.proxies = {
                 'http': self.proxy,
@@ -216,10 +239,16 @@ class FlexSMSClient:
             '_': str(int(time.time() * 1000))
         }
 
+        # Proactively rotate residential proxy IP every 4 requests to NEVER hit the portal's ~8-request/min rate limit:
+        if self.proxy and "bp-Atiar59w" in (self.raw_proxy or ""):
+            if getattr(self, "request_count_on_ip", 0) >= 4:
+                self.rotate_proxy_ip()
+
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.0))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.8, 3.5))
             self.last_response_time = time.time() - t0
+            self.last_query_time = time.time()
             
             date_str = res.headers.get('Date')
             if date_str:
@@ -231,17 +260,30 @@ class FlexSMSClient:
                 except Exception:
                     pass
             
-            # Instant 429 recovery: invalidate session & re-login immediately for fresh sesskey
+            # Smart 429 handling:
             if res.status_code == 429:
-                logger.warning(f"Status 429 on Ajax call for {self.username}. Invalidating session and re-logging in immediately...")
-                self.is_logged_in = False
-                self.ajax_url = None
+                if self.proxy and "bp-Atiar59w" in (self.raw_proxy or ""):
+                    logger.warning(f"Status 429 on Ajax call for {self.username} (Proxy). Rotating IP immediately...")
+                    self.rotate_proxy_ip()
+                    # Instant retry with fresh IP:
+                    try:
+                        res_retry = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.5, 5.0))
+                        if res_retry.status_code == 200:
+                            res = res_retry
+                            self.last_response_time = time.time() - t0
+                            self.request_count_on_ip = 1
+                            self.rate_limited_until = 0.0
+                        else:
+                            return None
+                    except Exception:
+                        return None
+                else:
+                    logger.warning(f"Status 429 on Ajax call for {self.username} (Direct). Setting 60s cooldown...")
+                    self.rate_limited_until = time.time() + 60.0
+                    return None
+            else:
+                self.request_count_on_ip = getattr(self, "request_count_on_ip", 0) + 1
                 self.rate_limited_until = 0.0
-                self._init_session()
-                if self.login():
-                    return self.fetch_records(keyword=keyword, display_length=display_length)
-                self.rate_limited_until = time.time() + 2.0
-                return None
 
             # Check for session expiration indicators
             if res.status_code != 200 or "Direct Script Access Not Allowed" in res.text or "<!DOCTYPE html>" in res.text:
@@ -349,7 +391,7 @@ class FlexSMSClientPool:
         statuses = []
         now = time.time()
         for c in clients:
-            prx_badge = " 🇩🇪 DE" if (c.proxy and "_area-DE" in c.proxy) else (" 🌐 Prx" if c.proxy else " ⚡ Direct")
+            prx_badge = " 🇩🇪 DE" if (c.proxy and "_area-DE" in c.proxy) else (" 🇺🇸 US" if (c.proxy and "_area-US" in c.proxy) else (" 🌐 Prx" if c.proxy else " ⚡ Direct"))
             if c.rate_limited_until > now:
                 remaining = int(c.rate_limited_until - now)
                 st = f"⏳ রেট-লিমিট ({remaining}s){prx_badge}"
@@ -400,16 +442,31 @@ class FlexSMSClientPool:
             now = time.time()
             n = len(self.clients)
             chosen = None
-            # Round-robin selection: pick next client whose rate limit cooldown has expired
+            
+            # 1. First priority: find a client ready for query (Direct client paced >= 7s to prevent 429; Proxy ready anytime)
             for i in range(n):
                 idx = (self.current_idx + i) % n
                 c = self.clients[idx]
-                if c.rate_limited_until <= now:
-                    chosen = c
-                    self.current_idx = (idx + 1) % n
-                    break
+                if c.rate_limited_until > now:
+                    continue
+                # For Direct clients without rotating proxy, pace queries at minimum 7 seconds apart:
+                if not c.proxy and (now - getattr(c, 'last_query_time', 0.0)) < 7.0:
+                    continue
+                chosen = c
+                self.current_idx = (idx + 1) % n
+                break
 
-            # If all clients are rate-limited, pick the one whose cooldown expires soonest
+            # 2. If Direct is pacing, select any available proxy client (which rotates residential IPs):
+            if not chosen:
+                for i in range(n):
+                    idx = (self.current_idx + i) % n
+                    c = self.clients[idx]
+                    if c.rate_limited_until <= now:
+                        chosen = c
+                        self.current_idx = (idx + 1) % n
+                        break
+
+            # 3. If all clients are in cooldown, pick the one expiring soonest:
             if not chosen:
                 chosen = min(self.clients, key=lambda c: c.rate_limited_until)
                 self.current_idx = (self.clients.index(chosen) + 1) % n
