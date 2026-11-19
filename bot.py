@@ -41,6 +41,28 @@ logger = logging.getLogger("SMSMonitorBot")
 
 import collections
 recent_logs_buffer = collections.deque(maxlen=1000)
+recent_otps_buffer = collections.deque(maxlen=150)
+sse_clients = set()
+
+def broadcast_otp_to_web(otp_item):
+    """Instantly pushes newly received Telegram OTP items to all connected web browsers via SSE (0ms latency)."""
+    if not otp_item or not otp_item.get("otp"):
+        return
+    # Check if duplicate in recent buffer
+    if any(o.get("id") == otp_item.get("id") for o in recent_otps_buffer):
+        return
+    recent_otps_buffer.appendleft(otp_item)
+    if not sse_clients:
+        return
+    msg_data = f"data: {json.dumps(otp_item)}\n\n"
+    dead = []
+    for q in list(sse_clients):
+        try:
+            q.put_nowait(msg_data)
+        except Exception:
+            dead.append(q)
+    for dq in dead:
+        sse_clients.discard(dq)
 
 class WebLogHandler(logging.Handler):
     def emit(self, record):
@@ -545,7 +567,7 @@ def make_dedup_key(record):
         msg_hash = hashlib.md5(clean_msg.encode("utf-8", errors="ignore")).hexdigest()[:12]
         return f"{clean_num}_MSG_{msg_hash}"
 
-def format_sms_message(rec, keyword="", elapsed_delay=0.8):
+def format_sms_message_with_payload(rec, keyword="", elapsed_delay=0.8, otp=None):
     raw_panel = str(rec.get("time", "")).strip()
     now_utc = datetime.now(timezone.utc)
     bd_tz = timezone(timedelta(hours=6))
@@ -596,12 +618,16 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     else:
         speed_str = f"Normal ⏱️ ({actual_delay}s)"
         
-    number = html.escape(rec.get("number", "N/A"))
+    raw_num = str(rec.get("number", "N/A")).strip()
+    clean_num = re.sub(r'[^0-9]', '', raw_num)
+    number = html.escape(raw_num)
     cli = html.escape(rec.get("cli", "N/A"))
-    msg = html.escape(rec.get("message", ""))
+    raw_msg = str(rec.get("message", "")).strip()
+    msg = html.escape(raw_msg)
     cause = html.escape(rec.get("cause", ""))
-    otp = extract_otp(rec.get("message", ""))
-    country_name, iso, flag, code = get_country_info(number)
+    if not otp:
+        otp = extract_otp(raw_msg)
+    country_name, iso, flag, code = get_country_info(raw_num)
     
     text = (
         f"📩 <b>New SMS Received</b>\n"
@@ -625,25 +651,48 @@ def format_sms_message(rec, keyword="", elapsed_delay=0.8):
     if keyword:
         text += f"🔍 <b>Keyword:</b> <code>{html.escape(keyword)}</code>\n"
     text += f"━━━━━━━━━━━━━━━━━━━━━━"
+
+    payload = {
+        "id": f"{clean_num}_OTP_{otp}" if otp else f"{clean_num}_{int(time.time()*1000)}",
+        "number": f"+{clean_num}" if clean_num else raw_num,
+        "clean_number": clean_num,
+        "otp": otp or "",
+        "country_name": country_name,
+        "country_flag": flag,
+        "country_code": code,
+        "cli": str(rec.get("cli", "")),
+        "message": raw_msg,
+        "panel_time": panel_display,
+        "received_time": bot_delivery_time,
+        "speed": speed_str,
+        "timestamp": time.time()
+    }
+    return text, payload
+
+def format_sms_message(rec, keyword="", elapsed_delay=0.8):
+    text, _ = format_sms_message_with_payload(rec, keyword=keyword, elapsed_delay=elapsed_delay)
     return text
 
 def get_persistent_keyboard():
     status_toggle_btn = "⏹ Stop Monitor" if config.get("is_running", True) else "▶️ Start Monitor"
     keyboard = [
         [
-            KeyboardButton("📋 কপি নাম্বার (দেশভিত্তিক)"),
+            KeyboardButton("🌐 লাইভ ওয়েবসাইট (Fast Copy)"),
             KeyboardButton("⚡ Check Now")
         ],
         [
-            KeyboardButton("📊 স্ট্যাটাস রিপোর্ট"),
-            KeyboardButton(status_toggle_btn)
+            KeyboardButton("📋 কপি নাম্বার (দেশভিত্তিক)"),
+            KeyboardButton("📊 স্ট্যাটাস রিপোর্ট")
         ],
         [
             KeyboardButton("🔑 পোর্টাল একাউন্ট"),
-            KeyboardButton("⏱ রিফ্রেশ টাইম")
+            KeyboardButton(status_toggle_btn)
         ],
         [
-            KeyboardButton("🔍 কিওয়ার্ড লিস্ট"),
+            KeyboardButton("⏱ রিফ্রেশ টাইম"),
+            KeyboardButton("🔍 কিওয়ার্ড লিস্ট")
+        ],
+        [
             KeyboardButton("👥 এডমিন প্যানেল")
         ]
     ]
@@ -657,8 +706,12 @@ def get_main_keyboard():
     status_btn_text = "⏹ Stop Monitor" if config["is_running"] else "▶️ Start Monitor"
     status_callback = "toggle_monitor"
     acc_count = len(config.get("accounts", []))
+    web_url = "https://sms-worker-bot-production.up.railway.app/"
     
     keyboard = [
+        [
+            InlineKeyboardButton("🌐 ওপেন লাইভ ওয়েবসাইট ⚡", url=web_url)
+        ],
         [
             InlineKeyboardButton(status_btn_text, callback_data=status_callback),
             InlineKeyboardButton("⚡ Check Now", callback_data="check_now")
@@ -1083,6 +1136,20 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if "কপি নাম্বার" in text or "সংগৃহীত নাম্বার" in text or text in ["/numbers", "/copy"]:
         text_menu, keyboard = render_country_selection_menu()
         await update.message.reply_text(text_menu, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    if "ওয়েবসাইট" in text or "website" in text or "লাইভ" in text or text in ["/web", "/live", "/dashboard"]:
+        web_url = "https://sms-worker-bot-production.up.railway.app/"
+        await update.message.reply_text(
+            f"⚡ <b>লাইভ টেলিগ্রাম OTP ওয়েবসাইট:</b>\n"
+            f"<a href=\"{web_url}\">{web_url}</a>\n\n"
+            f"📱 <b>সুবিধাসমূহ:</b>\n"
+            f"• সব টেলিগ্রাম কোড ০-মিলি-সেকেন্ডে লাইভ দেখতে পারবেন।\n"
+            f"• 📋 <b>Copy</b> বাটনে চাপলেই নাম্বার বা ওটিপি কপি হয়ে যাবে।\n"
+            f"• নতুন কোড আসতেই স্বয়ংক্রিয় নোটিফিকেশন সাউন্ড বাজবে!",
+            reply_markup=get_persistent_keyboard(),
+            parse_mode="HTML"
+        )
         return
 
     if "Check Now" in text or text == "/check_now":
@@ -1537,6 +1604,12 @@ async def process_sms_check(app, target_client=None):
                 else:
                     matched_kw = "ALL"
 
+                # Filter: Exclusively Telegram OTP codes (drop non-OTP spam without code):
+                raw_msg = str(rec.get("message", "")).strip()
+                otp = extract_otp(raw_msg)
+                if not otp:
+                    continue
+
                 dedup_key = make_dedup_key(rec)
                 if dedup_key not in seen_set:
                     seen_set.add(dedup_key)
@@ -1554,9 +1627,12 @@ async def process_sms_check(app, target_client=None):
 
                     fetch_elapsed = time.time() - t_fetch_start
                     delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
-                    msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
+                    msg_text, otp_payload = format_sms_message_with_payload(rec, keyword=matched_kw, elapsed_delay=delay, otp=otp)
                     
-                    # Strictly chronological instant delivery with 3 retries:
+                    # 1. Instant Push to connected Live Web Dashboard (0ms latency!):
+                    broadcast_otp_to_web(otp_payload)
+
+                    # 2. Strictly chronological instant delivery to Telegram group with 3 retries:
                     sent_ok = False
                     for attempt in range(3):
                         try:
@@ -1619,13 +1695,17 @@ async def background_monitoring_loop(app):
         for kw_target in search_targets:
             init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=40)
             if init_recs:
+                init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
+                    otp = extract_otp(r.get("message", ""))
+                    if not otp:
+                        continue
+
                     k = make_dedup_key(r)
                     clean_num = re.sub(r'[^0-9]', '', str(r.get("number", "")))
-                    otp = str(extract_otp(r.get("message", "")) or "")
                     already_seen = (
                         k in config.get("seen_hashes", []) or
-                        any(clean_num in h and otp in h for h in config.get("seen_hashes", []))
+                        any(clean_num in h and str(otp) in h for h in config.get("seen_hashes", []))
                     )
                     if already_seen:
                         seen_set.add(k)
@@ -1639,7 +1719,15 @@ async def background_monitoring_loop(app):
                         collected_set.add(clean_num)
                         new_collected_count += 1
 
-        logger.info(f"Startup seeding complete: {len(seen_set)} seen keys, {len(config['collected_numbers'])} collected numbers ({new_collected_count} newly seeded from today).")
+                    # Populate recent OTP buffer for initial web dashboard view:
+                    try:
+                        _, otp_payload = format_sms_message_with_payload(r, keyword="Telegram", elapsed_delay=1, otp=otp)
+                        if not any(o.get("id") == otp_payload.get("id") for o in recent_otps_buffer):
+                            recent_otps_buffer.append(otp_payload)
+                    except Exception:
+                        pass
+
+        logger.info(f"Startup seeding complete: {len(seen_set)} seen keys, {len(config['collected_numbers'])} collected numbers ({new_collected_count} newly seeded from today, {len(recent_otps_buffer)} in web feed).")
         save_config(config)
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
@@ -1647,8 +1735,7 @@ async def background_monitoring_loop(app):
     await asyncio.sleep(1.0)
 
     # 2. Continuous Concurrent Staggered Monitoring Workers:
-    # Each account in the pool gets a dedicated independent async worker loop.
-    # Staggering ensures a fresh query completes every ~1.1 seconds with ZERO delays and instant failover!
+    # Staggered by 0.7s to achieve sub-second round-trip query cadence with zero downtime!
     clients = scraper.get_clients()
     if not clients:
         logger.warning("No clients in pool! Waiting...")
@@ -1657,7 +1744,7 @@ async def background_monitoring_loop(app):
         clients = scraper.get_clients()
 
     num_clients = len(clients)
-    stagger_step = 1.1
+    stagger_step = 0.7  # 0.7s tight stagger between accounts
 
     async def run_account_worker(client, initial_delay):
         if initial_delay > 0:
@@ -1672,7 +1759,7 @@ async def background_monitoring_loop(app):
             except Exception as w_err:
                 logger.error(f"Worker error for {client.username}: {w_err}")
 
-            poll_interval = max(0.15, float(config.get("interval", 0.25)))
+            poll_interval = max(0.12, float(config.get("interval", 0.2)))
             await asyncio.sleep(poll_interval)
 
     worker_tasks = []
@@ -1680,8 +1767,53 @@ async def background_monitoring_loop(app):
         delay = i * stagger_step
         worker_tasks.append(asyncio.create_task(run_account_worker(c, delay)))
 
-    logger.info(f"All {num_clients} concurrent account workers actively running!")
+    logger.info(f"All {num_clients} concurrent account workers actively running at ultra-fast 0.7s cadence!")
     await asyncio.gather(*worker_tasks)
+
+DASHBOARD_FILE = os.path.join(os.path.dirname(__file__), "dashboard.html")
+
+async def handle_dashboard(request):
+    try:
+        if os.path.exists(DASHBOARD_FILE):
+            with open(DASHBOARD_FILE, "r", encoding="utf-8") as f:
+                content = f.read()
+            return web.Response(text=content, content_type="text/html", charset="utf-8")
+        else:
+            return web.Response(text="<h2>Dashboard template not found</h2>", content_type="text/html", status=404)
+    except Exception as e:
+        return web.Response(text=f"Error loading dashboard: {e}", status=500)
+
+async def handle_stream(request):
+    response = web.StreamResponse(
+        status=200,
+        reason='OK',
+        headers={
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive',
+            'Access-Control-Allow-Origin': '*'
+        }
+    )
+    await response.prepare(request)
+    q = asyncio.Queue(maxsize=150)
+    sse_clients.add(q)
+    try:
+        await response.write(b": connected\n\n")
+        while True:
+            msg = await q.get()
+            await response.write(msg.encode('utf-8'))
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+    finally:
+        sse_clients.discard(q)
+    return response
+
+async def handle_recent_otps(request):
+    return web.json_response({
+        "status": "ok",
+        "count": len(recent_otps_buffer),
+        "otps": list(recent_otps_buffer)
+    }, headers={'Access-Control-Allow-Origin': '*'})
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
@@ -1695,11 +1827,12 @@ async def handle_health_check(request):
         "bot": "SMS Monitor Bot Live",
         "total_sent": config.get("total_sent", 0),
         "keywords": config.get("keywords", []),
-        "interval": config.get("interval", 0.3),
+        "interval": config.get("interval", 0.2),
         "accounts_count": len(config.get("accounts", [])),
         "accounts_status": scraper.get_accounts_status(),
         "collected_numbers_count": len(active_nums),
-        "consumed_numbers_count": len(config.get("consumed_numbers", []))
+        "consumed_numbers_count": len(config.get("consumed_numbers", [])),
+        "web_live_clients": len(sse_clients)
     })
 
 async def handle_logs(request):
@@ -1708,14 +1841,18 @@ async def handle_logs(request):
 async def start_web_server():
     port = int(os.environ.get("PORT", 8080))
     server_app = web.Application()
-    server_app.router.add_get("/", handle_health_check)
+    server_app.router.add_get("/", handle_dashboard)
+    server_app.router.add_get("/dashboard", handle_dashboard)
+    server_app.router.add_get("/live", handle_dashboard)
+    server_app.router.add_get("/api/stream", handle_stream)
+    server_app.router.add_get("/api/recent-otps", handle_recent_otps)
     server_app.router.add_get("/health", handle_health_check)
     server_app.router.add_get("/logs", handle_logs)
     runner = web.AppRunner(server_app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"Render health-check web server listening on port {port}")
+    logger.info(f"Fast Web Dashboard & health server listening on port {port}")
 
 async def post_init(application):
     await asyncio.to_thread(fetch_cloud_store)
