@@ -114,7 +114,7 @@ async def telegram_dispatcher_worker():
                     await asyncio.sleep(0.3)
 
             telegram_queue.task_done()
-            await asyncio.sleep(0.05)  # Micro-spacing to keep Telegram happy
+            await asyncio.sleep(1.1)  # Safe 1.1s pacing to strictly avoid Telegram group rate limit
         except asyncio.CancelledError:
             break
         except Exception as ex:
