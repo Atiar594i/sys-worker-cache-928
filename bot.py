@@ -1915,7 +1915,8 @@ async def post_init(application):
     await asyncio.to_thread(fetch_cloud_store)
     if not os.environ.get("SEPARATE_WEB_SERVER"):
         application.create_task(start_web_server())
-    application.create_task(background_monitoring_loop(application))
+    if not os.environ.get("BOT_STANDALONE_COMMANDS"):
+        application.create_task(background_monitoring_loop(application))
     logger.info("Persistent store restored. Background monitor scheduled.")
 
 def main():

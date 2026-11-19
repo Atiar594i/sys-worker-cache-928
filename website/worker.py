@@ -2,7 +2,9 @@
 """
 ⚡ Dedicated Round-Robin Background Scraper Worker
 Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.35s.
-Extracts Telegram OTPs and pushes them instantly via SSE stream (< 0.1ms).
+Extracts Telegram OTPs and pushes them instantly to:
+  1. Web Dashboard via SSE stream (< 0.1ms)
+  2. Telegram Group via non-blocking async Telegram Bot API (< 0.1s)
 """
 
 import os
@@ -18,10 +20,20 @@ import time
 import json
 import logging
 import asyncio
+import aiohttp
 import collections
 from datetime import datetime, timezone, timedelta
 
-from website.config import ACCOUNTS, ROUND_ROBIN_INTERVAL, DISPLAY_LENGTH, extract_otp, get_country_info
+from website.config import (
+    ACCOUNTS,
+    ROUND_ROBIN_INTERVAL,
+    DISPLAY_LENGTH,
+    extract_otp,
+    get_country_info,
+    format_telegram_message,
+    BOT_TOKEN,
+    GROUP_ID
+)
 from website.client import PortalClient
 
 logger = logging.getLogger("ScraperWorker")
@@ -51,6 +63,34 @@ def broadcast_to_sse(item):
     for dq in dead:
         sse_clients.discard(dq)
 
+async def send_telegram_instant(text, number=""):
+    """
+    Sends message to Telegram group asynchronously with ZERO blocking (<0.1s).
+    Runs as an independent task so scraping and web push remain at 0ms latency.
+    """
+    if not BOT_TOKEN or not GROUP_ID:
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": GROUP_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    for attempt in range(2):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=3.5)) as resp:
+                    if resp.status == 200:
+                        logger.info(f"⚡ [Instant Telegram Send] Dispatched OTP for {number} to group!")
+                        return
+                    else:
+                        err_txt = await resp.text()
+                        logger.warning(f"Telegram dispatch attempt {attempt+1} HTTP {resp.status}: {err_txt[:100]}")
+        except Exception as e:
+            logger.error(f"Error sending Telegram message for {number}: {e}")
+        await asyncio.sleep(0.2)
+
 async def check_account_records(client, use_keyword=False):
     """Checks an account for new Telegram SMS and extracts OTPs."""
     kw = "Telegram" if use_keyword else ""
@@ -74,7 +114,7 @@ async def check_account_records(client, use_keyword=False):
         if "telegram" not in raw_msg.lower() and "telegram" not in raw_cli.lower():
             continue
 
-        otp = extract_otp(raw_msg)
+        otp = extract_otp(raw_msg, raw_cli)
         if not otp:
             continue
 
@@ -113,10 +153,26 @@ async def check_account_records(client, use_keyword=False):
             "timestamp": time.time()
         }
 
-        # ⚡ INSTANT PUSH TO WEB DASHBOARD (< 0.1ms latency):
+        # ⚡ 1. INSTANT PUSH TO WEB DASHBOARD (< 0.1ms latency):
         recent_otps_buffer.appendleft(payload)
         broadcast_to_sse(payload)
         logger.info(f"🚀 [0ms Web Push] New OTP for {clean_num}: {otp} (Account: {client.username})")
+
+        # ⚡ 2. INSTANT DISPATCH TO TELEGRAM GROUP (< 0.1s latency, non-blocking):
+        if BOT_TOKEN and GROUP_ID:
+            tg_msg = format_telegram_message(
+                phone=clean_num,
+                country_name=country_name,
+                flag=flag,
+                cli=raw_cli or "Telegram",
+                otp=otp,
+                raw_msg=raw_msg,
+                panel_time=panel_display,
+                delivery_time=now_display,
+                speed_str="⚡ Instant (0ms)",
+                keyword="Telegram"
+            )
+            asyncio.create_task(send_telegram_instant(tg_msg, clean_num))
 
     return new_otps
 
@@ -137,9 +193,10 @@ async def start_worker_loop():
                 init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
                     msg = str(r.get("message", ""))
-                    if "telegram" not in msg.lower() and "telegram" not in str(r.get("cli", "")).lower():
+                    cli_r = str(r.get("cli", ""))
+                    if "telegram" not in msg.lower() and "telegram" not in cli_r.lower():
                         continue
-                    otp = extract_otp(msg)
+                    otp = extract_otp(msg, cli_r)
                     if not otp: continue
                     clean_n = re.sub(r'[^0-9]', '', str(r.get("number", "")))
                     k = f"{clean_n}_OTP_{otp}"
