@@ -127,7 +127,7 @@ def extract_otp(text, cli=""):
 
     return None
 
-def format_telegram_message(phone, country_name, flag, cli, otp, raw_msg, panel_time, delivery_time, speed_str="⚡ Instant (0ms)", keyword="Telegram"):
+def format_telegram_message(phone, country_name, flag, cli, otp, raw_msg, panel_time, delivery_time, speed_str="⚡ Instant (1s)", keyword="Telegram"):
     """Formats the Telegram message identical to the requested template."""
     clean_p = re.sub(r'[^0-9]', '', str(phone))
     num_display = f"+{clean_p}"

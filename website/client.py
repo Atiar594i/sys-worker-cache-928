@@ -15,7 +15,9 @@ if _parent_dir not in sys.path:
 
 import re
 import time
+import email.utils
 import logging
+from datetime import datetime, timezone
 from website.config import BASE_URL
 from website.proxy_manager import proxy_mgr
 
@@ -32,6 +34,7 @@ class PortalClient:
         self.query_count = 0
         self.last_response_time = 0.0
         self.rate_limited_until = 0.0
+        self.server_clock_skew = 49.5
         self.consecutive_slow_queries = 0
         self.current_proxy = proxy_mgr.get_next_proxy()
         self.session = None
@@ -69,6 +72,12 @@ class PortalClient:
         signin_url = f"{self.base_url}/signin"
         try:
             r = self.session.get(login_url, timeout=(1.5, 3.5))
+            if "Date" in r.headers:
+                try:
+                    s_dt = email.utils.parsedate_to_datetime(r.headers["Date"])
+                    self.server_clock_skew = (datetime.now(timezone.utc) - s_dt).total_seconds()
+                except Exception:
+                    pass
             if r.status_code == 429:
                 self.rate_limited_until = time.time() + 1.5
                 if proxy_mgr.proxies:
@@ -156,6 +165,13 @@ class PortalClient:
             res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.5))
             duration = time.time() - t0
             self.last_response_time = duration
+
+            if "Date" in res.headers:
+                try:
+                    s_dt = email.utils.parsedate_to_datetime(res.headers["Date"])
+                    self.server_clock_skew = (datetime.now(timezone.utc) - s_dt).total_seconds()
+                except Exception:
+                    pass
 
             # 1. Check for Rate Limit 429
             if res.status_code == 429:

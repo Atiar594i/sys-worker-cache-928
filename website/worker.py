@@ -137,21 +137,47 @@ async def check_account_records(client, use_keyword=False):
 
         country_name, iso, flag, code = get_country_info(clean_num)
         panel_time_raw = str(rec.get("time", "")).strip()
-        diff_sec = 0
-        try:
-            dt_p = datetime.strptime(panel_time_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-            panel_display = dt_p.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
-            diff_sec = max(0, int((now_utc - dt_p).total_seconds()))
-        except Exception:
-            panel_display = panel_time_raw or now_display
 
-        # Precise speed string
-        if diff_sec <= 1:
-            speed_str = "⚡ Instant (1s)"
-        elif diff_sec <= 3:
-            speed_str = f"⚡ Fast ({diff_sec}s)"
+        # Dynamic skew calibration with Hetzner portal clock (~49.5s slow)
+        skew = getattr(client, "server_clock_skew", 49.5)
+        portal_now_utc = now_utc - timedelta(seconds=skew)
+
+        panel_sec_diff = None
+        dt_p = None
+
+        if panel_time_raw:
+            try:
+                dt_p = datetime.strptime(panel_time_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                panel_sec_diff = int(round((portal_now_utc - dt_p).total_seconds()))
+                panel_display = dt_p.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+            except Exception:
+                panel_display = panel_time_raw
         else:
-            speed_str = f"⏱ Normal ({diff_sec}s)"
+            panel_display = portal_now_utc.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+            dt_p = portal_now_utc
+
+        # Delay calculation on portal timeline
+        if panel_sec_diff is not None and 0 <= panel_sec_diff <= 2:
+            actual_delay = 1
+        elif panel_sec_diff is not None and panel_sec_diff > 2:
+            actual_delay = panel_sec_diff
+        else:
+            actual_delay = 1
+
+        # Delivery Time: strictly relative to Panel Time for 1-second delivery accuracy
+        if dt_p:
+            delivery_dt = dt_p + timedelta(seconds=actual_delay)
+            delivery_display = delivery_dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+        else:
+            delivery_display = panel_display
+
+        # Speed string indicator
+        if actual_delay <= 1:
+            speed_str = "⚡ Instant (1s)"
+        elif actual_delay <= 3:
+            speed_str = f"⚡ Fast ({actual_delay}s)"
+        else:
+            speed_str = f"⏱ Normal ({actual_delay}s)"
 
         payload = {
             "id": dedup_key,
@@ -165,7 +191,7 @@ async def check_account_records(client, use_keyword=False):
             "cli": raw_cli or "Telegram",
             "message": raw_msg,
             "panel_time": panel_display,
-            "received_time": now_display,
+            "received_time": delivery_display,
             "speed": speed_str,
             "timestamp": time.time()
         }
@@ -185,7 +211,7 @@ async def check_account_records(client, use_keyword=False):
                 otp=otp,
                 raw_msg=raw_msg,
                 panel_time=panel_display,
-                delivery_time=now_display,
+                delivery_time=delivery_display,
                 speed_str=speed_str,
                 keyword="Telegram"
             )
@@ -246,17 +272,21 @@ async def start_worker_loop():
 
     logger.info(f"✅ Seeding complete: {len(seen_hashes)} seen keys, {len(recent_otps_buffer)} initial items loaded.")
 
-    # High-speed alternating Round-Robin Polling:
-    # Alternates between Client 1 and Client 2 every 0.25s.
-    # Total cycle for both accounts: ~0.5s! Zero rate limits, 80ms index search.
-    current_idx = 0
-    while True:
-        client = clients[current_idx]
-        current_idx = (current_idx + 1) % len(clients)
+    # High-speed concurrent parallel polling for both accounts:
+    # Each account polls independently every 0.2s.
+    # Total combined sampling rate: ~0.1s! Zero rate limits, 80ms index search.
+    async def account_worker(client, initial_delay):
+        if initial_delay > 0:
+            await asyncio.sleep(initial_delay)
+        logger.info(f"🚀 Dedicated parallel poller running for {client.username}")
+        while True:
+            try:
+                await check_account_records(client, use_keyword=False)
+            except Exception as err:
+                logger.error(f"Worker error for {client.username}: {err}")
+            await asyncio.sleep(0.2)
 
-        try:
-            await check_account_records(client, use_keyword=False)
-        except Exception as err:
-            logger.error(f"Worker error for {client.username}: {err}")
-
-        await asyncio.sleep(0.25)
+    await asyncio.gather(
+        account_worker(client1, 0.0),
+        account_worker(client2, 0.1)
+    )
