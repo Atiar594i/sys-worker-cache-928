@@ -12,7 +12,7 @@
     {
       "username": "Smswork21_FD",
       "password": "Smswork21_FD",
-      "proxy": "socks5://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312"
+      "proxy": ""
     }
   ],
   "consumed_numbers": [
@@ -5736,5 +5736,6 @@
     "96171386710_OTP_19301",
     "212617036472_OTP_35695"
   ],
-  "last_updated": "2026-11-19T14:44:56.632927+00:00"
+  "last_updated": "2026-11-19T14:44:56.632927+00:00",
+  "interval": 0.25
 }
