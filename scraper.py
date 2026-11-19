@@ -191,7 +191,7 @@ class FlexSMSClient:
             self.rate_limited_until = time.time() + 20.0
             return False
 
-    def fetch_records(self, keyword="", display_length=15):
+    def fetch_records(self, keyword="", display_length=25):
         """
         Fetches failed SMS records.
         Strictly sorts DESCENDING so latest records are always first.
@@ -218,7 +218,10 @@ class FlexSMSClient:
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
             'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Referer': f"{self.base_url}/agent/FailedSMSReports"
+            'Referer': f"{self.base_url}/agent/FailedSMSReports",
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
         }
         
         self.echo_counter += 1
@@ -246,7 +249,7 @@ class FlexSMSClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.5, 6.0))
             self.last_response_time = time.time() - t0
             self.last_query_time = time.time()
             self.consecutive_errors = 0
@@ -438,7 +441,16 @@ class FlexSMSClientPool:
             results[c.username] = ok
         return results
 
-    def fetch_records(self, keyword="", display_length=80):
+    def get_clients(self):
+        with self.lock:
+            return list(self.clients)
+
+    def fetch_records_for_client(self, client, keyword="", display_length=25):
+        if not client:
+            return None
+        return client.fetch_records(keyword=keyword, display_length=display_length)
+
+    def fetch_records(self, keyword="", display_length=25):
         with self.lock:
             if not self.clients:
                 return None

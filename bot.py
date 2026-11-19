@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger("SMSMonitorBot")
 
 import collections
-recent_logs_buffer = collections.deque(maxlen=200)
+recent_logs_buffer = collections.deque(maxlen=1000)
 
 class WebLogHandler(logging.Handler):
     def emit(self, record):
@@ -1497,97 +1497,111 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 sms_check_lock = asyncio.Lock()
 
-async def process_sms_check(app):
-    async with sms_check_lock:
-        keywords = config.get("keywords", [])
-        group_id = config.get("group_id")
-        new_sent_count = 0
+async def process_sms_check(app, target_client=None):
+    keywords = config.get("keywords", [])
+    group_id = config.get("group_id")
+    new_sent_count = 0
 
+    try:
+        # Query portal directly with configured keywords so MySQL database filters out all non-target spam:
+        active_keywords = [kw.strip() for kw in keywords if kw.strip()]
+        search_targets = active_keywords if active_keywords else [""]
+
+        for kw_target in search_targets:
+            t_fetch_start = time.time()
+            if target_client:
+                records = await asyncio.to_thread(scraper.fetch_records_for_client, target_client, keyword=kw_target, display_length=25)
+            else:
+                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=25)
+
+            if not records:
+                continue
+
+            # Sort strictly chronological (oldest first, newest last):
+            records.sort(key=lambda r: str(r.get("time", "")))
+
+            for rec in records:
+                # In-memory keyword match (0.001ms in RAM):
+                rec_cli = str(rec.get("cli", "")).strip().lower()
+                rec_msg = str(rec.get("message", "")).strip().lower()
+
+                matched_kw = ""
+                if keywords:
+                    for kw in keywords:
+                        kw_clean = kw.strip().lower()
+                        if kw_clean and (kw_clean in rec_cli or kw_clean in rec_msg):
+                            matched_kw = kw
+                            break
+                    if not matched_kw:
+                        continue
+                else:
+                    matched_kw = "ALL"
+
+                dedup_key = make_dedup_key(rec)
+                if dedup_key not in seen_set:
+                    seen_set.add(dedup_key)
+                    config["seen_hashes"].append(dedup_key)
+                    config["total_sent"] += 1
+                    new_sent_count += 1
+
+                    raw_num = str(rec.get("number", "")).strip()
+                    clean_num = re.sub(r'[^0-9]', '', raw_num)
+                    if clean_num:
+                        consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
+                        collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
+                        if clean_num not in consumed_set and clean_num not in collected_set:
+                            config["collected_numbers"].append(clean_num)
+
+                    fetch_elapsed = time.time() - t_fetch_start
+                    delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
+                    msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
+                    
+                    # Strictly chronological instant delivery with 3 retries:
+                    sent_ok = False
+                    for attempt in range(3):
+                        try:
+                            await app.bot.send_message(
+                                chat_id=group_id,
+                                text=msg_text,
+                                parse_mode="HTML",
+                                read_timeout=10,
+                                write_timeout=10,
+                                connect_timeout=5
+                            )
+                            logger.info(f"Instant Sent SMS to group for number: {rec.get('number')} (Key: {dedup_key})")
+                            sent_ok = True
+                            break
+                        except Exception as send_err:
+                            logger.error(f"Attempt {attempt+1}/3 failed to send SMS to group for {rec.get('number')}: {send_err}")
+                            await asyncio.sleep(0.3)
+
+                    if not sent_ok:
+                        # Revert seen_set so it can be retried on next poll:
+                        seen_set.discard(dedup_key)
+                        if dedup_key in config.get("seen_hashes", []):
+                            config["seen_hashes"].remove(dedup_key)
+
+    except Exception as e:
+        logger.error(f"Error checking records: {e}")
+
+    if new_sent_count > 0:
+        save_config(config)
         try:
-            # Query portal directly with configured keywords so MySQL database filters out all non-target spam:
-            active_keywords = [kw.strip() for kw in keywords if kw.strip()]
-            search_targets = active_keywords if active_keywords else [""]
+            threading.Thread(target=sync_cloud_store, daemon=True).start()
+        except Exception:
+            pass
 
-            for kw_target in search_targets:
-                t_fetch_start = time.time()
-                # Fast direct filtered fetch with deep buffer (80 records) to never miss burst traffic:
-                records = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=80)
-                if not records:
-                    continue
-
-                # Sort strictly chronological (oldest first, newest last):
-                records.sort(key=lambda r: str(r.get("time", "")))
-
-                for rec in records:
-                    # In-memory keyword match (0.001ms in RAM):
-                    rec_cli = str(rec.get("cli", "")).strip().lower()
-                    rec_msg = str(rec.get("message", "")).strip().lower()
-
-                    matched_kw = ""
-                    if keywords:
-                        for kw in keywords:
-                            kw_clean = kw.strip().lower()
-                            if kw_clean and (kw_clean in rec_cli or kw_clean in rec_msg):
-                                matched_kw = kw
-                                break
-                        if not matched_kw:
-                            continue
-                    else:
-                        matched_kw = "ALL"
-
-                    dedup_key = make_dedup_key(rec)
-                    if dedup_key not in seen_set:
-                        seen_set.add(dedup_key)
-                        config["seen_hashes"].append(dedup_key)
-                        config["total_sent"] += 1
-                        new_sent_count += 1
-
-                        raw_num = str(rec.get("number", "")).strip()
-                        clean_num = re.sub(r'[^0-9]', '', raw_num)
-                        if clean_num:
-                            consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-                            collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
-                            if clean_num not in consumed_set and clean_num not in collected_set:
-                                config["collected_numbers"].append(clean_num)
-
-                        fetch_elapsed = time.time() - t_fetch_start
-                        delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
-                        msg_text = format_sms_message(rec, keyword=matched_kw, elapsed_delay=delay)
-                        
-                        async def _send_one_sms(txt, num, d_key):
-                            try:
-                                await app.bot.send_message(
-                                    chat_id=group_id,
-                                    text=txt,
-                                    parse_mode="HTML"
-                                )
-                                logger.info(f"Instant Sent SMS to group for number: {num} (Key: {d_key})")
-                            except Exception as send_err:
-                                logger.error(f"Failed to send message to group: {send_err}")
-
-                        asyncio.create_task(_send_one_sms(msg_text, rec.get('number'), dedup_key))
-
-        except Exception as e:
-            logger.error(f"Error checking records: {e}")
-
-        if new_sent_count > 0:
-            save_config(config)
-            try:
-                threading.Thread(target=sync_cloud_store, daemon=True).start()
-            except Exception:
-                pass
-
-        return new_sent_count
+    return new_sent_count
 
 async def background_monitoring_loop(app):
-    logger.info("Initializing background monitoring loop...")
+    logger.info("Initializing background monitoring loop with concurrent staggered workers...")
     
     # 0. Pre-authenticate all pool accounts in parallel:
     try:
         logger.info("Pre-authenticating all accounts in pool...")
         login_res = await asyncio.to_thread(scraper.login_all)
         logger.info(f"Pool pre-authentication results: {login_res}")
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(1.0)
     except Exception as e:
         logger.error(f"Error during pool pre-authentication: {e}")
 
@@ -1601,9 +1615,9 @@ async def background_monitoring_loop(app):
         collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
         new_collected_count = 0
 
-        logger.info(f"Pre-seeding historical numbers and existing seen hashes...")
+        logger.info("Pre-seeding historical numbers and existing seen hashes...")
         for kw_target in search_targets:
-            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=100)
+            init_recs = await asyncio.to_thread(scraper.fetch_records, keyword=kw_target, display_length=40)
             if init_recs:
                 for r in init_recs:
                     k = make_dedup_key(r)
@@ -1627,36 +1641,47 @@ async def background_monitoring_loop(app):
 
         logger.info(f"Startup seeding complete: {len(seen_set)} seen keys, {len(config['collected_numbers'])} collected numbers ({new_collected_count} newly seeded from today).")
         save_config(config)
-        try:
-            threading.Thread(target=sync_cloud_store, daemon=True).start()
-        except Exception:
-            pass
     except Exception as e:
         logger.error(f"Error during startup seeding: {e}")
 
-    await asyncio.sleep(2.0)
+    await asyncio.sleep(1.0)
 
-    # 2. Continuous Real-time Monitoring Loop:
-    # Round-robin with per-account independent cooldowns.
-    # On 429: failover to other account immediately, no global halt!
-    consecutive_empty = 0
-    while True:
-        try:
-            if config.get("is_running", True):
-                found = await process_sms_check(app)
-                if found and found > 0:
-                    consecutive_empty = 0
-                else:
-                    consecutive_empty += 1
-        except asyncio.CancelledError:
-            logger.info("Background loop cancelled.")
-            break
-        except Exception as e:
-            logger.error(f"Unexpected error in background monitoring loop: {e}")
+    # 2. Continuous Concurrent Staggered Monitoring Workers:
+    # Each account in the pool gets a dedicated independent async worker loop.
+    # Staggering ensures a fresh query completes every ~1.1 seconds with ZERO delays and instant failover!
+    clients = scraper.get_clients()
+    if not clients:
+        logger.warning("No clients in pool! Waiting...")
+        while not scraper.get_clients():
+            await asyncio.sleep(2.0)
+        clients = scraper.get_clients()
 
-        # Ultra-fast continuous polling (0.25s interval, no batching, zero lag):
-        loop_interval = max(0.15, float(config.get("interval", 0.25)))
-        await asyncio.sleep(loop_interval)
+    num_clients = len(clients)
+    stagger_step = 1.1
+
+    async def run_account_worker(client, initial_delay):
+        if initial_delay > 0:
+            await asyncio.sleep(initial_delay)
+        logger.info(f"Monitoring worker started for {client.username} (stagger: {initial_delay:.2f}s)")
+        while True:
+            try:
+                if config.get("is_running", True):
+                    await process_sms_check(app, target_client=client)
+            except asyncio.CancelledError:
+                break
+            except Exception as w_err:
+                logger.error(f"Worker error for {client.username}: {w_err}")
+
+            poll_interval = max(0.15, float(config.get("interval", 0.25)))
+            await asyncio.sleep(poll_interval)
+
+    worker_tasks = []
+    for i, c in enumerate(clients):
+        delay = i * stagger_step
+        worker_tasks.append(asyncio.create_task(run_account_worker(c, delay)))
+
+    logger.info(f"All {num_clients} concurrent account workers actively running!")
+    await asyncio.gather(*worker_tasks)
 
 async def handle_health_check(request):
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
