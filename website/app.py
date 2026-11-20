@@ -117,6 +117,7 @@ async def handle_health(request):
                 "is_logged_in": c.is_logged_in,
                 "proxy": c.current_proxy or "Direct (High-Speed)",
                 "response_time": round(c.last_response_time, 2),
+                "query_count": c.query_count,
                 "is_rate_limited": c.rate_limited_until > now,
                 "cooldown_remaining": max(0, round(c.rate_limited_until - now, 1))
             }

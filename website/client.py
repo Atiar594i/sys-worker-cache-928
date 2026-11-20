@@ -200,7 +200,7 @@ class PortalClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(2.5, 4.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.0))
             duration = time.time() - t0
             self.last_response_time = duration
 
@@ -220,7 +220,7 @@ class PortalClient:
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)
-            if duration > 3.8:
+            if duration > 2.2:
                 self.consecutive_slow_queries += 1
                 if self.consecutive_slow_queries >= 2:
                     logger.warning(f"⚠️ Slow socket on [{self.worker_id}] ({duration:.2f}s). Resetting session to avoid stalls...")
@@ -254,8 +254,8 @@ class PortalClient:
                     'cause': str(row[4]).strip() if len(row) > 4 else ""
                 })
             return records
-        except requests.exceptions.Timeout:
-            logger.warning(f"⚠️ Query timeout on [{self.worker_id}] for {self.username}. Resetting socket...")
+        except (requests.exceptions.Timeout, requests.exceptions.RequestException) as re_err:
+            logger.warning(f"⚠️ Query timeout/network error on [{self.worker_id}] for {self.username} ({re_err}). Resetting socket...")
             self.reset_socket()
             return None
         except Exception as e:

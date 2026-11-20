@@ -380,7 +380,7 @@ async def start_worker_loop():
 
             if worker.rate_limited_until <= now_t:
                 try:
-                    await check_account_records(worker, keyword="Telegram", display_length=15)
+                    await check_account_records(worker, keyword="Telegram", display_length=35)
                     queries_on_current_worker += 1
                 except Exception as err:
                     logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
@@ -394,8 +394,8 @@ async def start_worker_loop():
                 current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
                 queries_on_current_worker = 0
 
-            # 0.35s with proxies, 0.4s direct (alternating between accounts gives ~3.8s rest per account!)
-            interval = 0.35 if proxy_mgr.proxies else 0.4
+            # 0.25s with proxies, 0.3s direct (alternating between accounts gives ~3.4s rest per account!)
+            interval = 0.25 if proxy_mgr.proxies else 0.3
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())

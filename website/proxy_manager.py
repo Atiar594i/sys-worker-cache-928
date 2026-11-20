@@ -103,8 +103,8 @@ class ProxyManager:
     def create_session(self, current_proxy=None):
         """Creates a high-performance Session with connection pooling and optimal headers."""
         s = requests.Session()
-        retries = Retry(total=1, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504])
-        adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retries)
+        retries = Retry(total=0, connect=0, read=0, redirect=0, status=0)
+        adapter = HTTPAdapter(pool_connections=5, pool_maxsize=5, max_retries=retries)
         s.mount("http://", adapter)
         s.mount("https://", adapter)
 
