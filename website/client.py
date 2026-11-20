@@ -45,6 +45,18 @@ class PortalClient:
         """Initializes or resets the HTTP session with current proxy and randomized User-Agent."""
         self.session = proxy_mgr.create_session(current_proxy=self.current_proxy)
 
+    def reset_socket(self):
+        """Drops the existing TCP connection without wiping the login session or cookies."""
+        old_cookies = self.session.cookies.copy() if self.session else None
+        try:
+            if self.session:
+                self.session.close()
+        except Exception:
+            pass
+        self._init_session()
+        if old_cookies:
+            self.session.cookies.update(old_cookies)
+
     def reset_session(self):
         """Drops existing socket connections and creates a clean HTTP session."""
         try:
@@ -164,6 +176,7 @@ class PortalClient:
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Referer': f"{self.base_url}/agent/FailedSMSReports",
             'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Connection': 'close',
         }
         self.echo_counter += 1
         self.query_count += 1
@@ -214,7 +227,7 @@ class PortalClient:
                     if proxy_mgr.proxies:
                         self.switch_proxy_and_relogin("Proactive slow socket recovery")
                     else:
-                        self.reset_session()
+                        self.reset_socket()
             else:
                 self.consecutive_slow_queries = 0
 

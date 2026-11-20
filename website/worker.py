@@ -69,12 +69,10 @@ def build_worker_pool():
             pool.append(worker)
         logger.info(f"⚡ Initialized proxy pool with {len(pool)} rotating workers.")
     else:
-        # High-performance decoupled 4-tab pool on direct connection with isolated sessions & User-Agents
+        # Dedicated high-speed dual-account pool on direct connection (1 for Atiar59_FD, 1 for Smswork21_FD)
         pool.append(PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"], worker_id="Tab-1"))
         pool.append(PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"], worker_id="Tab-2"))
-        pool.append(PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"], worker_id="Tab-3"))
-        pool.append(PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"], worker_id="Tab-4"))
-        logger.info(f"⚡ Initialized 4 decoupled virtual tab workers (2x Atiar59_FD, 2x Smswork21_FD).")
+        logger.info(f"⚡ Initialized dual dedicated portal workers (Atiar59_FD & Smswork21_FD).")
     return pool
 
 worker_pool = build_worker_pool()
@@ -162,7 +160,7 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
         )
     except asyncio.TimeoutError:
         logger.warning(f"⚠️ Query timeout (>3.0s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
-        client.reset_session()
+        client.reset_socket()
         return 0
     except Exception as e:
         logger.warning(f"Fetch error on [{client.worker_id}] {client.username}: {e}")
@@ -359,16 +357,14 @@ async def start_worker_loop():
     # Start guaranteed Telegram dispatcher worker in background
     asyncio.create_task(telegram_dispatcher_worker())
 
-    # High-speed Rotating Multi-Tab Scheduler:
-    # Implements the user's tab-rotation architecture:
-    # 1. Stays on a tab/proxy for 3 refreshes.
-    # 2. Switches to the next tab/proxy before rate limits or Apache connection stalls hit.
-    # 3. Cycles through all tabs (e.g. 10 tabs / 10 proxies) round-robin.
-    # 4. By the time it returns to Tab 1, Tab 1 has rested, eliminating all rate limits!
-    QUERIES_PER_TAB = 3
+    # High-speed Rotating Scheduler:
+    # 1. When proxies are available, executes 3 queries per proxy before switching.
+    # 2. When on direct connection, alternates seamlessly between Atiar59_FD and Smswork21_FD on every query.
+    # 3. With Connection: close, sockets never hang in keep-alive, and each account rests for ~3.5s!
+    QUERIES_PER_TAB = 3 if len(worker_pool) > 2 else 1
 
     async def rotating_scheduler():
-        logger.info(f"⚡ Rotating Multi-Tab Scheduler active with {len(worker_pool)} workers ({QUERIES_PER_TAB} queries per tab).")
+        logger.info(f"⚡ Rotating Scheduler active with {len(worker_pool)} workers ({QUERIES_PER_TAB} queries per turn).")
         current_worker_idx = 0
         queries_on_current_worker = 0
 
@@ -382,20 +378,16 @@ async def start_worker_loop():
                     queries_on_current_worker += 1
                 except Exception as err:
                     logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
-                    queries_on_current_worker = QUERIES_PER_TAB  # Force tab switch on error
+                    queries_on_current_worker = QUERIES_PER_TAB
             else:
-                # Worker is in cooldown, switch tab immediately
                 queries_on_current_worker = QUERIES_PER_TAB
 
-            # Switch to next tab after completing QUERIES_PER_TAB refreshes
             if queries_on_current_worker >= QUERIES_PER_TAB:
                 current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
                 queries_on_current_worker = 0
-                next_worker = worker_pool[current_worker_idx]
-                logger.debug(f"🔄 Completed {QUERIES_PER_TAB} queries. Switching tab -> [{next_worker.worker_id}] ({next_worker.username})")
 
-            # High-speed pacing: 0.35s with proxies, 1.0s direct to guarantee Hetzner IP firewall clearance
-            interval = 0.35 if proxy_mgr.proxies else 1.0
+            # 0.35s with proxies, 0.45s direct (alternating between accounts gives 3.5s rest per account!)
+            interval = 0.35 if proxy_mgr.proxies else 0.45
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())
