@@ -181,20 +181,23 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
             except Exception:
                 dt_p_raw = None
 
-        skew = getattr(client, "server_clock_skew", 51.0)
-        server_display = None
         if dt_p_raw:
-            # Calibrate against Hetzner server's 51s slow internal hardware clock
-            calibrated_arrival_dt = dt_p_raw + timedelta(seconds=skew)
-            panel_display = calibrated_arrival_dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
-            server_display = dt_p_raw.astimezone(bd_tz).strftime("%I:%M:%S %p")
-            delivery_dt = calibrated_arrival_dt + timedelta(seconds=1)
-            delivery_display = delivery_dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+            panel_display = dt_p_raw.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+            diff_seconds = max(0, int((now_utc - dt_p_raw).total_seconds()))
         else:
             panel_display = now_display
-            delivery_display = now_display
+            diff_seconds = 0
 
-        speed_str = "⚡ Instant (1s)"
+        # Delivery Time is the ACTUAL real-time current clock when the bot delivers the message to the Telegram group
+        delivery_display = now_display
+
+        # Dynamic Speed calculating the exact elapsed seconds between Panel Time and Delivery Time
+        if diff_seconds <= 1:
+            speed_str = "⚡ Instant (1s)" if diff_seconds == 1 else "⚡ Instant (0s)"
+        elif diff_seconds <= 3:
+            speed_str = f"⚡ Instant ({diff_seconds}s)"
+        else:
+            speed_str = f"⏱ Normal ({diff_seconds}s)"
 
         payload = {
             "id": dedup_key,
@@ -208,7 +211,6 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
             "cli": raw_cli or "Telegram",
             "message": raw_msg,
             "panel_time": panel_display,
-            "server_time": server_display,
             "received_time": delivery_display,
             "speed": speed_str,
             "timestamp": time.time()
@@ -231,8 +233,7 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
                 panel_time=panel_display,
                 delivery_time=delivery_display,
                 speed_str=speed_str,
-                keyword="Telegram",
-                server_time=server_display
+                keyword="Telegram"
             )
             telegram_queue.put_nowait({"text": tg_msg, "number": clean_num})
 
@@ -285,11 +286,9 @@ async def start_worker_loop():
                     seen_hashes[k] = now_seed_ts
 
                     country_name, iso, flag, code = get_country_info(clean_n)
-                    skew = getattr(c, "server_clock_skew", 51.0)
                     try:
                         dt = datetime.strptime(p_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                        cal_dt = dt + timedelta(seconds=skew)
-                        p_disp = cal_dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+                        p_disp = dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
                     except Exception:
                         p_disp = p_time
 
