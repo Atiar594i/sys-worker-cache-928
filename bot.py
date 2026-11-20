@@ -350,29 +350,10 @@ async def check_auth(update: Update) -> bool:
         return False
     return True
 
+from website.config import get_country_info as config_get_country_info
+
 def get_country_info(phone_str):
-    clean = re.sub(r'[^0-9]', '', str(phone_str))
-    if not clean:
-        return "Other Countries", "XX", "🌐", 0
-    pfx = clean[:4]
-    if pfx in COUNTRY_CACHE:
-        return COUNTRY_CACHE[pfx]
-    try:
-        p = phonenumbers.parse("+" + clean)
-        country_name = geocoder.country_name_for_number(p, "en")
-        iso = phonenumbers.region_code_for_number(p)
-        if not country_name:
-            country_name = f"Code +{p.country_code}"
-        if not iso:
-            iso = "XX"
-        flag = "".join(chr(127397 + ord(c)) for c in iso.upper()) if len(iso) == 2 and iso != "XX" else "🌐"
-        res = (country_name, iso, flag, p.country_code)
-        COUNTRY_CACHE[pfx] = res
-        return res
-    except Exception:
-        res = ("Other Countries", "XX", "🌐", 0)
-        COUNTRY_CACHE[pfx] = res
-        return res
+    return config_get_country_info(phone_str)
 
 def group_numbers_by_country():
     consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
