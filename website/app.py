@@ -27,6 +27,7 @@ from website.worker import (
     start_worker_loop
 )
 from website.proxy_manager import proxy_mgr
+import numbers_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,6 +111,8 @@ async def handle_health(request):
         "status": "online",
         "system": "Dedicated Pure Telegram OTP Web Hub (Modular website/)",
         "total_seen": len(seen_hashes),
+        "total_collected_numbers": numbers_store.get_collected_count(),
+        "total_consumed_numbers": numbers_store.get_consumed_count(),
         "total_proxies_loaded": len(proxy_mgr.proxies),
         "accounts": [
             {

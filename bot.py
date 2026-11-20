@@ -31,6 +31,7 @@ from telegram.ext import (
     filters
 )
 from scraper import FlexSMSClient, FlexSMSClientPool
+import numbers_store
 
 # Configure Logging
 logging.basicConfig(
@@ -356,12 +357,7 @@ def get_country_info(phone_str):
     return config_get_country_info(phone_str)
 
 def group_numbers_by_country():
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-    nums = [
-        re.sub(r'[^0-9]', '', str(n))
-        for n in config.get("collected_numbers", [])
-        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-    ]
+    nums = numbers_store.get_active_numbers()
     groups = {}
     for n in nums:
         c_name, iso, flag, code = get_country_info(n)
@@ -376,12 +372,7 @@ def group_numbers_by_country():
 
 def render_country_selection_menu():
     groups = group_numbers_by_country()
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-    active_nums = [
-        re.sub(r'[^0-9]', '', str(n))
-        for n in config.get("collected_numbers", [])
-        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-    ]
+    active_nums = numbers_store.get_active_numbers()
     total = len(active_nums)
     
     if total == 0:
@@ -424,14 +415,9 @@ def render_country_selection_menu():
 
 def render_country_numbers_view(iso):
     groups = group_numbers_by_country()
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
     
     if iso == "ALL":
-        target_numbers = [
-            re.sub(r'[^0-9]', '', str(n))
-            for n in config.get("collected_numbers", [])
-            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-        ]
+        target_numbers = numbers_store.get_active_numbers()
         title = "🌐 সব দেশের নাম্বার"
     else:
         info = groups.get(iso)
@@ -470,41 +456,16 @@ def render_country_numbers_view(iso):
 
 def consume_numbers_for_country(iso):
     groups = group_numbers_by_country()
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
     
     if iso == "ALL":
-        to_consume = [
-            re.sub(r'[^0-9]', '', str(n))
-            for n in config.get("collected_numbers", [])
-            if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-        ]
+        to_consume = numbers_store.get_active_numbers()
     else:
         to_consume = list(groups.get(iso, {}).get("numbers", []))
     
     if not to_consume:
         return 0, []
 
-    if "consumed_numbers" not in config:
-        config["consumed_numbers"] = []
-    
-    for n in to_consume:
-        clean = re.sub(r'[^0-9]', '', str(n))
-        if clean and clean not in consumed_set:
-            config["consumed_numbers"].append(clean)
-            consumed_set.add(clean)
-
-    to_consume_cleaned = set(re.sub(r'[^0-9]', '', str(n)) for n in to_consume)
-    config["collected_numbers"] = [
-        re.sub(r'[^0-9]', '', str(n))
-        for n in config.get("collected_numbers", [])
-        if re.sub(r'[^0-9]', '', str(n)) not in to_consume_cleaned
-    ]
-    save_config(config)
-    try:
-        threading.Thread(target=sync_cloud_store, daemon=True).start()
-    except Exception:
-        pass
-    return len(to_consume), to_consume
+    return numbers_store.consume_numbers(to_consume)
 
 def extract_otp(text):
     if not text:
@@ -716,14 +677,8 @@ def get_main_keyboard():
 def get_status_text():
     state_str = "🟢 Running (সক্রিয়)" if config["is_running"] else "🔴 Stopped (বন্ধ)"
     kw_str = ", ".join(config["keywords"]) if config["keywords"] else "(কোন কিওয়ার্ড নেই - সব আসবে)"
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-    active_nums = [
-        re.sub(r'[^0-9]', '', str(n))
-        for n in config.get("collected_numbers", [])
-        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-    ]
-    total_active_nums = len(active_nums)
-    total_consumed = len(config.get("consumed_numbers", []))
+    total_active_nums = numbers_store.get_collected_count()
+    total_consumed = numbers_store.get_consumed_count()
     total_admins = len(config.get("admins", [SUPER_ADMIN_ID]))
     total_accs = len(config.get("accounts", []))
     
@@ -1854,12 +1809,6 @@ async def handle_recent_otps(request):
     }, headers={'Access-Control-Allow-Origin': '*'})
 
 async def handle_health_check(request):
-    consumed_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("consumed_numbers", []))
-    active_nums = [
-        re.sub(r'[^0-9]', '', str(n))
-        for n in config.get("collected_numbers", [])
-        if re.sub(r'[^0-9]', '', str(n)) not in consumed_set
-    ]
     return web.json_response({
         "status": "online",
         "bot": "SMS Monitor Bot Live",
@@ -1868,8 +1817,8 @@ async def handle_health_check(request):
         "interval": config.get("interval", 0.2),
         "accounts_count": len(config.get("accounts", [])),
         "accounts_status": scraper.get_accounts_status(),
-        "collected_numbers_count": len(active_nums),
-        "consumed_numbers_count": len(config.get("consumed_numbers", [])),
+        "collected_numbers_count": numbers_store.get_collected_count(),
+        "consumed_numbers_count": numbers_store.get_consumed_count(),
         "web_live_clients": len(sse_clients)
     })
 

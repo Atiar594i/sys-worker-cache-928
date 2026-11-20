@@ -40,6 +40,7 @@ from website.config import (
 )
 from website.client import PortalClient
 from website.proxy_manager import proxy_mgr
+import numbers_store
 
 logger = logging.getLogger("ScraperWorker")
 
@@ -207,6 +208,15 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
 
         seen_hashes[dedup_key] = time.time()
         new_otps += 1
+
+        # Collect new number into bot's persistent collection:
+        # Strictly enforces:
+        # 1. New number collected only ONCE.
+        # 2. If number was previously copied & deleted (consumed), it will NOT be collected!
+        try:
+            numbers_store.collect_number(clean_num, otp=otp)
+        except Exception as ce:
+            logger.warning(f"Error collecting number {clean_num}: {ce}")
 
         country_name, iso, flag, code = get_country_info(clean_num)
 
