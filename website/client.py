@@ -15,6 +15,7 @@ if _parent_dir not in sys.path:
 
 import re
 import time
+import requests
 import email.utils
 import logging
 from datetime import datetime, timezone

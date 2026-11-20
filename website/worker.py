@@ -414,8 +414,8 @@ async def start_worker_loop():
 
             # Dynamic polling cadence:
             # - With multi-tab proxies: 0.25s cadence (each proxy IP queries every ~3-5s, zero 429)
-            # - Direct single IP: 1.4s cadence (total cycle ~3.0s matches server token refill rate)
-            interval = 0.25 if proxy_mgr.proxies else 1.4
+            # - Direct single IP: 1.8s cadence (total cycle ~3.3s perfectly matches server token refill rate)
+            interval = 0.25 if proxy_mgr.proxies else 1.8
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())
