@@ -118,8 +118,8 @@ async def telegram_dispatcher_worker():
                         await asyncio.sleep(0.3)
 
                 telegram_queue.task_done()
-                # 0.35s spacing between consecutive messages ensures Telegram group never rate-limits
-                await asyncio.sleep(0.35)
+                # 0.1s spacing allows ultra-fast consecutive dispatches for same-second arrivals while protecting from flood
+                await asyncio.sleep(0.1)
             except Exception as ge:
                 logger.error(f"Unexpected error in telegram_dispatcher_worker: {ge}")
                 await asyncio.sleep(0.5)
@@ -139,8 +139,8 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
     now_display = now_utc.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
 
     new_otps = 0
-    # Process newest records first (DESC) so newest portal rows are always processed first
-    records.sort(key=lambda r: str(r.get("time", "")), reverse=True)
+    # Process oldest records first (ASCENDING) so records arrive in strict chronological serial order in Telegram!
+    records.sort(key=lambda r: str(r.get("time", "")), reverse=False)
 
     for rec in records:
         raw_msg = str(rec.get("message", "")).strip()
@@ -318,29 +318,24 @@ async def start_worker_loop():
     asyncio.create_task(telegram_dispatcher_worker())
 
     # High-speed parallel interleaved polling tasks:
-    # Fast lane (4 out of 5 checks): empty search display_length=25 takes ~0.4s (indexes top rows)
-    # Safety lane (1 out of 5 checks): keyword="Telegram" with display_length=30
-    # Two independent accounts alternate with 0.08s sleep and 0.25s phase offset.
-    # Result: The portal is polled every ~0.25s, guaranteeing sub-second OTP pickup with 0 rate limit!
+    # ALWAYS query keyword="Telegram" with display_length=15.
+    # Directly filters MySQL database so Telegram OTPs are NEVER buried by global traffic,
+    # and every single OTP is caught within ~0.5s of arrival!
+    # Client 1 and Client 2 alternate with 0.5s phase offset.
     async def account_poller(client_obj, offset_delay=0.0):
         await asyncio.sleep(offset_delay)
         logger.info(f"⚡ Dedicated high-speed polling task started for {client_obj.username}")
-        cycle = 0
         while True:
             now_t = time.time()
             if client_obj.rate_limited_until <= now_t:
                 try:
-                    if cycle % 5 == 0:
-                        await check_account_records(client_obj, keyword="Telegram", display_length=30)
-                    else:
-                        await check_account_records(client_obj, keyword="", display_length=25)
-                    cycle += 1
+                    await check_account_records(client_obj, keyword="Telegram", display_length=15)
                 except Exception as err:
                     logger.error(f"Worker error for {client_obj.username}: {err}")
-            await asyncio.sleep(0.08)
+            await asyncio.sleep(0.05)
 
     asyncio.create_task(account_poller(client1, 0.0))
-    asyncio.create_task(account_poller(client2, 0.25))
+    asyncio.create_task(account_poller(client2, 0.5))
 
     # Keep worker loop alive
     while True:
