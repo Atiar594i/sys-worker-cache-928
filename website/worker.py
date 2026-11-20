@@ -78,6 +78,7 @@ def build_worker_pool():
     return pool
 
 worker_pool = build_worker_pool()
+clients = worker_pool  # Backward compatibility alias for web health API
 
 def broadcast_to_sse(item):
     """Broadcasts a new Telegram OTP to all connected browsers via SSE instantly (<0.1ms)."""
