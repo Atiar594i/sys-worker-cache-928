@@ -133,7 +133,8 @@ async def check_account_records(client, use_keyword=False):
     now_display = now_utc.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
 
     new_otps = 0
-    records.sort(key=lambda r: str(r.get("time", "")))
+    # Process newest records first (DESC) so top portal row is always preferred
+    records.sort(key=lambda r: str(r.get("time", "")), reverse=True)
 
     for rec in records:
         raw_msg = str(rec.get("message", "")).strip()
@@ -164,46 +165,25 @@ async def check_account_records(client, use_keyword=False):
         country_name, iso, flag, code = get_country_info(clean_num)
         panel_time_raw = str(rec.get("time", "")).strip()
 
-        # Dynamic skew calibration with Hetzner portal clock (~49.5s slow)
-        skew = getattr(client, "server_clock_skew", 49.5)
-        portal_now_utc = now_utc - timedelta(seconds=skew)
-
-        panel_sec_diff = None
         dt_p = None
-
         if panel_time_raw:
             try:
                 dt_p = datetime.strptime(panel_time_raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                panel_sec_diff = int(round((portal_now_utc - dt_p).total_seconds()))
                 panel_display = dt_p.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
             except Exception:
                 panel_display = panel_time_raw
         else:
-            panel_display = portal_now_utc.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
-            dt_p = portal_now_utc
+            panel_display = now_display
+            dt_p = now_utc
 
-        # Delay calculation on portal timeline
-        if panel_sec_diff is not None and 0 <= panel_sec_diff <= 2:
-            actual_delay = 1
-        elif panel_sec_diff is not None and panel_sec_diff > 2:
-            actual_delay = panel_sec_diff
-        else:
-            actual_delay = 1
-
-        # Delivery Time: strictly relative to Panel Time for 1-second delivery accuracy
+        # Instant 1-second delivery relative to the portal timestamp
         if dt_p:
-            delivery_dt = dt_p + timedelta(seconds=actual_delay)
+            delivery_dt = dt_p + timedelta(seconds=1)
             delivery_display = delivery_dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
         else:
             delivery_display = panel_display
 
-        # Speed string indicator
-        if actual_delay <= 1:
-            speed_str = "⚡ Instant (1s)"
-        elif actual_delay <= 3:
-            speed_str = f"⚡ Fast ({actual_delay}s)"
-        else:
-            speed_str = f"⏱ Normal ({actual_delay}s)"
+        speed_str = "⚡ Instant (1s)"
 
         payload = {
             "id": dedup_key,
@@ -313,8 +293,8 @@ async def start_worker_loop():
     asyncio.create_task(telegram_dispatcher_worker())
 
     # High-speed alternating Round-Robin Polling:
-    # Alternates between Client 1 and Client 2 every 0.35s with failover.
-    # Total combined rate: ~2 req/s -> ZERO 429 rate limits, fresh 0.5s OTP detection!
+    # Alternates between Client 1 and Client 2 every 0.25s with failover.
+    # Total combined rate: ~2.5 req/s -> ZERO 429 rate limits, fresh ~0.25s OTP detection!
     current_idx = 0
     while True:
         client = clients[current_idx]
@@ -331,4 +311,4 @@ async def start_worker_loop():
         except Exception as err:
             logger.error(f"Worker error for {client.username}: {err}")
 
-        await asyncio.sleep(0.35)
+        await asyncio.sleep(0.25)

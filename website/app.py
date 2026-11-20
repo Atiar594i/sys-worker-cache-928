@@ -37,6 +37,8 @@ logger = logging.getLogger("WebApp")
 class WebLogHandler(logging.Handler):
     def emit(self, record):
         try:
+            if "aiohttp.access" in record.name or "httpx" in record.name:
+                return
             recent_logs_buffer.append(self.format(record))
         except Exception:
             pass
