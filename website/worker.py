@@ -159,9 +159,12 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
             continue
 
         panel_time_raw = str(rec.get("time", "")).strip()
-        dedup_key = f"{clean_num}_OTP_{otp}_{panel_time_raw}"
+        # Per-number OTP deduplication: The SAME OTP on the SAME phone number is sent ONCE only.
+        # Eliminates carrier retries, multi-route echoes, and duplicates (2s, 3s, 5s apart),
+        # while instantly allowing any NEW OTP on that number.
+        dedup_key = f"{clean_num}_OTP_{otp}"
 
-        # Permanent deduplication: NEVER re-process or re-send an already seen portal record!
+        # Deduplication: NEVER re-process or re-send an already seen OTP for this number!
         if dedup_key in seen_hashes:
             continue
 
@@ -267,7 +270,11 @@ async def start_worker_loop():
                     if len(clean_n) < 6: continue
 
                     p_time = str(r.get("time", "")).strip()
-                    k = f"{clean_n}_OTP_{otp}_{p_time}"
+                    k = f"{clean_n}_OTP_{otp}"
+
+                    # If this number + OTP was already seeded, skip carrier duplicates on the portal
+                    if k in seen_hashes:
+                        continue
 
                     # Mark permanently as SEEN so this pre-existing record is NEVER sent to Telegram
                     seen_hashes[k] = now_seed_ts
@@ -279,24 +286,22 @@ async def start_worker_loop():
                     except Exception:
                         p_disp = p_time
 
-                    # Only append to recent_otps_buffer if not already present
-                    if not any(item.get("id") == k for item in recent_otps_buffer):
-                        recent_otps_buffer.appendleft({
-                            "id": k,
-                            "number": f"+{clean_n}",
-                            "clean_number": clean_n,
-                            "otp": otp,
-                            "account": c.username,
-                            "country_name": country_name,
-                            "country_flag": flag,
-                            "country_code": code,
-                            "cli": str(r.get("cli", "Telegram")),
-                            "message": msg,
-                            "panel_time": p_disp,
-                            "received_time": p_disp,
-                            "speed": "⚡ Recorded",
-                            "timestamp": now_seed_ts
-                        })
+                    recent_otps_buffer.appendleft({
+                        "id": k,
+                        "number": f"+{clean_n}",
+                        "clean_number": clean_n,
+                        "otp": otp,
+                        "account": c.username,
+                        "country_name": country_name,
+                        "country_flag": flag,
+                        "country_code": code,
+                        "cli": str(r.get("cli", "Telegram")),
+                        "message": msg,
+                        "panel_time": p_disp,
+                        "received_time": p_disp,
+                        "speed": "⚡ Recorded",
+                        "timestamp": now_seed_ts
+                    })
         except Exception as e:
             logger.warning(f"Error seeding historical records: {e}")
 
