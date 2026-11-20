@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-⚡ Dedicated Round-Robin Background Scraper Worker
-Polls the portal alternating between Atiar59_FD and Smswork21_FD every ~0.25s.
-Extracts Telegram OTPs and pushes them instantly to:
+⚡ Dedicated High-Performance Scraper Worker
+- Parallel staggered dual-account polling (Client 1 & Client 2) every ~0.17s.
+- Targeted search (keyword="Telegram") directly filters MySQL database,
+  guaranteeing high-volume global SMS traffic (5 SMS/sec) NEVER buries Telegram OTPs.
+- Periodic wide-scan safety net (keyword="") every ~3.5s for any non-standard SMS.
+- Ultra-low latency:
   1. Web Dashboard via SSE stream (< 0.1ms)
-  2. Telegram Group via direct non-blocking task (< 0.2s)
+  2. Telegram Group via queue worker (< 0.2s, 0 drop, no 429 rate limit)
 """
 
 import os
@@ -119,12 +122,13 @@ async def telegram_dispatcher_worker():
             logger.error(f"Unexpected error in telegram_dispatcher_worker: {ge}")
             await asyncio.sleep(0.5)
 
-async def check_account_records(client, use_keyword=False):
+async def check_account_records(client, keyword="Telegram", display_length=DISPLAY_LENGTH):
     """
     Checks an account for new Telegram SMS and extracts OTPs.
-    Always uses ultra-fast 80ms index search (keyword="") to eliminate MySQL table scan bottlenecks.
+    Defaults to keyword="Telegram" so that high-volume global traffic on Hetzner
+    can NEVER bury or displace Telegram records.
     """
-    records = await asyncio.to_thread(client.fetch_records, keyword="", display_length=DISPLAY_LENGTH)
+    records = await asyncio.to_thread(client.fetch_records, keyword=keyword, display_length=display_length)
     if not records:
         return 0
 
@@ -133,7 +137,7 @@ async def check_account_records(client, use_keyword=False):
     now_display = now_utc.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
 
     new_otps = 0
-    # Process newest records first (DESC) so top portal row is always preferred
+    # Process newest records first (DESC) so newest portal rows are always processed first
     records.sort(key=lambda r: str(r.get("time", "")), reverse=True)
 
     for rec in records:
@@ -240,12 +244,17 @@ async def start_worker_loop():
         asyncio.to_thread(client2.login)
     )
 
-    # Initial historical seed across both accounts (load full 150 records to prevent any startup bursts)
+    # Initial historical seed across both accounts:
+    # Any record older than 25 minutes is marked as already seen so we don't spam ancient codes.
+    # Recent records from the last 20 minutes (e.g. 20565, 49105, 63917) remain unseen and will be
+    # immediately dispatched upon startup!
     bd_tz = timezone(timedelta(hours=6))
     now_seed_ts = time.time()
+    cutoff_startup_dt = datetime.now(timezone.utc) - timedelta(minutes=25)
+
     for c in clients:
         try:
-            init_recs = await asyncio.to_thread(c.fetch_records, keyword="", display_length=150)
+            init_recs = await asyncio.to_thread(c.fetch_records, keyword="Telegram", display_length=30)
             if init_recs:
                 init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
@@ -258,32 +267,35 @@ async def start_worker_loop():
                     clean_n = re.sub(r'[^0-9]', '', str(r.get("number", "")))
                     if len(clean_n) < 6: continue
                     k = f"{clean_n}_OTP_{otp}"
-                    if k in seen_hashes:
-                        continue
-                    seen_hashes[k] = now_seed_ts
-                    country_name, iso, flag, code = get_country_info(clean_n)
+
                     p_time = str(r.get("time", ""))
+                    dt_rec = None
                     try:
-                        dt = datetime.strptime(p_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                        p_disp = dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+                        dt_rec = datetime.strptime(p_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
                     except Exception:
-                        p_disp = p_time
-                    recent_otps_buffer.appendleft({
-                        "id": k,
-                        "number": f"+{clean_n}",
-                        "clean_number": clean_n,
-                        "otp": otp,
-                        "account": c.username,
-                        "country_name": country_name,
-                        "country_flag": flag,
-                        "country_code": code,
-                        "cli": str(r.get("cli", "Telegram")),
-                        "message": msg,
-                        "panel_time": p_disp,
-                        "received_time": p_disp,
-                        "speed": "⚡ Live",
-                        "timestamp": now_seed_ts
-                    })
+                        pass
+
+                    # If older than 25m, mark as seen and populate buffer for dashboard history
+                    if dt_rec and dt_rec < cutoff_startup_dt:
+                        seen_hashes[k] = now_seed_ts
+                        country_name, iso, flag, code = get_country_info(clean_n)
+                        p_disp = dt_rec.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+                        recent_otps_buffer.appendleft({
+                            "id": k,
+                            "number": f"+{clean_n}",
+                            "clean_number": clean_n,
+                            "otp": otp,
+                            "account": c.username,
+                            "country_name": country_name,
+                            "country_flag": flag,
+                            "country_code": code,
+                            "cli": str(r.get("cli", "Telegram")),
+                            "message": msg,
+                            "panel_time": p_disp,
+                            "received_time": p_disp,
+                            "speed": "⚡ Live",
+                            "timestamp": now_seed_ts
+                        })
         except Exception as e:
             logger.warning(f"Error seeding historical records: {e}")
 
@@ -292,23 +304,31 @@ async def start_worker_loop():
     # Start guaranteed Telegram dispatcher worker in background
     asyncio.create_task(telegram_dispatcher_worker())
 
-    # High-speed alternating Round-Robin Polling:
-    # Alternates between Client 1 and Client 2 every 0.25s with failover.
-    # Total combined rate: ~2.5 req/s -> ZERO 429 rate limits, fresh ~0.25s OTP detection!
-    current_idx = 0
+    # High-speed parallel interleaved polling tasks:
+    # Client 1 polls every ~0.35s, Client 2 polls every ~0.35s with 0.17s offset.
+    # Result: The portal is polled every ~0.17s, guaranteeing sub-second OTP pickup with 0 rate limit!
+    async def account_poller(client_obj, offset_delay=0.0):
+        await asyncio.sleep(offset_delay)
+        logger.info(f"⚡ Dedicated polling task started for {client_obj.username}")
+        cycle = 0
+        while True:
+            now_t = time.time()
+            if client_obj.rate_limited_until <= now_t:
+                try:
+                    # Fast lane (9 out of 10 checks): keyword="Telegram" with display_length=30
+                    # Safety lane (1 out of 10 checks): wide keyword="" with display_length=100
+                    if cycle % 10 == 0:
+                        await check_account_records(client_obj, keyword="", display_length=100)
+                    else:
+                        await check_account_records(client_obj, keyword="Telegram", display_length=30)
+                    cycle += 1
+                except Exception as err:
+                    logger.error(f"Worker error for {client_obj.username}: {err}")
+            await asyncio.sleep(0.35)
+
+    asyncio.create_task(account_poller(client1, 0.0))
+    asyncio.create_task(account_poller(client2, 0.17))
+
+    # Keep worker loop alive
     while True:
-        client = clients[current_idx]
-        current_idx = (current_idx + 1) % len(clients)
-
-        # Failover check: if chosen client is in cooldown, immediately switch to the other client
-        now_t = time.time()
-        if client.rate_limited_until > now_t:
-            client = clients[current_idx]
-            current_idx = (current_idx + 1) % len(clients)
-
-        try:
-            await check_account_records(client, use_keyword=False)
-        except Exception as err:
-            logger.error(f"Worker error for {client.username}: {err}")
-
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(60)
