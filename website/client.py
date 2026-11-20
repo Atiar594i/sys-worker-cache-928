@@ -187,7 +187,7 @@ class PortalClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.0))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.5))
             duration = time.time() - t0
             self.last_response_time = duration
 
@@ -207,7 +207,7 @@ class PortalClient:
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)
-            if duration > 1.8:
+            if duration > 2.2:
                 self.consecutive_slow_queries += 1
                 if self.consecutive_slow_queries >= 2:
                     logger.warning(f"⚠️ Slow socket on [{self.worker_id}] ({duration:.2f}s). Resetting session to avoid stalls...")

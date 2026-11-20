@@ -153,15 +153,15 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
     Checks an account for new Telegram SMS and extracts OTPs.
     Defaults to keyword="Telegram" so that high-volume global traffic on Hetzner
     can NEVER bury or displace Telegram records.
-    Guarded with hard 2.2s asyncio timeout to prevent socket read hangs.
+    Guarded with hard 3.0s asyncio timeout to prevent socket read hangs.
     """
     try:
         records = await asyncio.wait_for(
             asyncio.to_thread(client.fetch_records, keyword=keyword, display_length=display_length),
-            timeout=2.2
+            timeout=3.0
         )
     except asyncio.TimeoutError:
-        logger.warning(f"⚠️ Query timeout (>2.2s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
+        logger.warning(f"⚠️ Query timeout (>3.0s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
         client.reset_session()
         return 0
     except Exception as e:
@@ -394,8 +394,8 @@ async def start_worker_loop():
                 next_worker = worker_pool[current_worker_idx]
                 logger.debug(f"🔄 Completed {QUERIES_PER_TAB} queries. Switching tab -> [{next_worker.worker_id}] ({next_worker.username})")
 
-            # High-speed pacing: 0.35s with proxies, 0.65s direct
-            interval = 0.35 if proxy_mgr.proxies else 0.65
+            # High-speed pacing: 0.35s with proxies, 1.0s direct to guarantee Hetzner IP firewall clearance
+            interval = 0.35 if proxy_mgr.proxies else 1.0
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())
