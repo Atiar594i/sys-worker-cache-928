@@ -424,15 +424,16 @@ def extract_otp(text, cli=""):
 
     return None
 
-def format_telegram_message(phone, country_name, flag, cli, otp, raw_msg, panel_time, delivery_time, speed_str="⚡ Instant (1s)", keyword="Telegram"):
+def format_telegram_message(phone, country_name, flag, cli, otp, raw_msg, panel_time, delivery_time, speed_str="⚡ Instant (1s)", keyword="Telegram", server_time=None):
     """Formats the Telegram message identical to the requested template."""
     clean_p = re.sub(r'[^0-9]', '', str(phone))
     num_display = f"+{clean_p}"
     
+    server_extra = f" (Server: <code>{server_time}</code>)" if server_time else ""
     text = (
         f"📩 <b>New SMS Received</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🕒 <b>Panel Time:</b> <code>{panel_time}</code>\n"
+        f"🕒 <b>Panel Time:</b> <code>{panel_time}</code>{server_extra}\n"
         f"⚡ <b>Delivery Time:</b> <code>{delivery_time}</code>\n"
         f"⏳ <b>Speed:</b> <code>{speed_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
