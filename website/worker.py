@@ -364,9 +364,10 @@ async def start_worker_loop():
     asyncio.create_task(telegram_dispatcher_worker())
 
     # High-speed Rotating Scheduler:
-    # 1. When proxies are available, executes 3 queries per proxy before switching.
-    # 2. When on direct connection, alternates seamlessly between Atiar59_FD and Smswork21_FD on every query.
-    # 3. With Connection: close, sockets never hang in keep-alive, and each account rests for ~3.5s!
+    # 1. When proxies are available, each worker represents an isolated proxy tab (with unique IP).
+    #    Runs 3 queries per tab, then seamlessly rotates to the next tab.
+    # 2. When on direct connection (single IP), alternates between Atiar59_FD and Smswork21_FD with 1.4s cadence.
+    #    (1.6s query duration + 1.4s sleep = 3.0s cycle, strictly matching Hetzner token bucket refill rate).
     QUERIES_PER_TAB = 3 if len(worker_pool) > 2 else 1
 
     async def rotating_scheduler():
@@ -375,8 +376,8 @@ async def start_worker_loop():
         queries_on_current_worker = 0
 
         while True:
-            worker = worker_pool[current_worker_idx % len(worker_pool)]
             now_t = time.time()
+            worker = worker_pool[current_worker_idx % len(worker_pool)]
 
             if worker.rate_limited_until <= now_t:
                 try:
@@ -386,16 +387,25 @@ async def start_worker_loop():
                     logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
                     queries_on_current_worker = QUERIES_PER_TAB
             else:
-                wait_time = max(0.5, worker.rate_limited_until - now_t)
-                await asyncio.sleep(min(wait_time, 2.5))
-                queries_on_current_worker = QUERIES_PER_TAB
+                # If current worker is cooling down, check if all workers are cooling down
+                all_limited = all(w.rate_limited_until > now_t for w in worker_pool)
+                if all_limited:
+                    earliest_ready = min(w.rate_limited_until for w in worker_pool)
+                    sleep_dur = max(0.5, earliest_ready - now_t)
+                    await asyncio.sleep(min(sleep_dur, 8.0))
+                # Rotate to next worker immediately without blocking
+                current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
+                queries_on_current_worker = 0
+                continue
 
             if queries_on_current_worker >= QUERIES_PER_TAB:
                 current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
                 queries_on_current_worker = 0
 
-            # 0.25s with proxies, 0.3s direct (alternating between accounts gives ~3.4s rest per account!)
-            interval = 0.25 if proxy_mgr.proxies else 0.3
+            # Dynamic polling cadence:
+            # - With multi-tab proxies: 0.25s cadence (each proxy IP queries every ~3-5s, zero 429)
+            # - Direct single IP: 1.4s cadence (total cycle ~3.0s matches server token refill rate)
+            interval = 0.25 if proxy_mgr.proxies else 1.4
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())

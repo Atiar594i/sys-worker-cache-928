@@ -103,7 +103,8 @@ class PortalClient:
                 except Exception:
                     pass
             if r.status_code == 429:
-                self.rate_limited_until = time.time() + 2.5
+                cooldown = 1.0 if proxy_mgr.proxies else 8.0
+                self.rate_limited_until = time.time() + cooldown
                 if proxy_mgr.proxies:
                     self.switch_proxy_and_relogin("429 on login")
                 return False
@@ -122,7 +123,8 @@ class PortalClient:
             }
             r_post = self.session.post(signin_url, data=data, timeout=(2.0, 4.0), allow_redirects=True)
             if r_post.status_code == 429:
-                self.rate_limited_until = time.time() + 2.5
+                cooldown = 1.0 if proxy_mgr.proxies else 8.0
+                self.rate_limited_until = time.time() + cooldown
                 if proxy_mgr.proxies:
                     self.switch_proxy_and_relogin("429 on signin")
                 return False
@@ -133,7 +135,8 @@ class PortalClient:
             rep_url = f"{self.base_url}/agent/FailedSMSReports"
             r_rep = self.session.get(rep_url, timeout=(2.0, 4.0))
             if r_rep.status_code == 429:
-                self.rate_limited_until = time.time() + 2.5
+                cooldown = 1.0 if proxy_mgr.proxies else 8.0
+                self.rate_limited_until = time.time() + cooldown
                 if proxy_mgr.proxies:
                     self.switch_proxy_and_relogin("429 on FailedSMSReports")
                 return False
@@ -213,10 +216,14 @@ class PortalClient:
 
             # 1. Check for Rate Limit 429
             if res.status_code == 429:
-                logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown 2.5s.")
-                self.rate_limited_until = time.time() + 2.5
                 if proxy_mgr.proxies:
+                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] with proxy {self.current_proxy}. Rotating proxy...")
                     self.switch_proxy_and_relogin("429 received from portal")
+                    self.rate_limited_until = 0.0
+                else:
+                    cooldown = 8.0
+                    self.rate_limited_until = time.time() + cooldown
+                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown {cooldown}s to allow token bucket refill.")
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)

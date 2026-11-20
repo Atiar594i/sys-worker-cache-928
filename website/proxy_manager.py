@@ -44,7 +44,20 @@ class ProxyManager:
                 if p and not p.startswith("#"):
                     loaded.append(self._format_proxy(p))
 
-        # 2. From proxies.txt file
+        # 2. From PROXY_URL (optional endpoint to download rotating proxy list)
+        proxy_url = os.environ.get("PROXY_URL", "").strip()
+        if proxy_url:
+            try:
+                r = requests.get(proxy_url, timeout=5.0)
+                if r.status_code == 200:
+                    for line in r.text.splitlines():
+                        p = line.strip()
+                        if p and not p.startswith("#"):
+                            loaded.append(self._format_proxy(p))
+            except Exception as pe:
+                logger.warning(f"Could not fetch proxies from PROXY_URL: {pe}")
+
+        # 3. From proxies.txt file
         search_paths = [
             self.proxy_file,
             os.path.join(os.path.dirname(__file__), "proxies.txt"),
