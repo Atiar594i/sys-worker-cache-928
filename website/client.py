@@ -200,12 +200,16 @@ class PortalClient:
             records = []
             for row in raw_rows:
                 if len(row) < 4: continue
-                if not str(row[1]).strip() or not str(row[3]).strip(): continue
+                num_str = str(row[1]).strip()
+                msg_str = str(row[3]).strip()
+                if not num_str or not msg_str: continue
+                clean_digits = re.sub(r'[^0-9]', '', num_str)
+                if len(clean_digits) < 6: continue
                 records.append({
                     'time': str(row[0]).strip(),
-                    'number': str(row[1]).strip(),
+                    'number': num_str,
                     'cli': str(row[2]).strip(),
-                    'message': str(row[3]).strip(),
+                    'message': msg_str,
                     'cause': str(row[4]).strip() if len(row) > 4 else ""
                 })
             return records
