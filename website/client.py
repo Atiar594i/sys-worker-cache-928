@@ -95,7 +95,7 @@ class PortalClient:
         login_url = f"{self.base_url}/login"
         signin_url = f"{self.base_url}/signin"
         try:
-            r = self.session.get(login_url, timeout=(1.5, 2.5))
+            r = self.session.get(login_url, timeout=(2.0, 4.0))
             if "Date" in r.headers:
                 try:
                     s_dt = email.utils.parsedate_to_datetime(r.headers["Date"])
@@ -120,7 +120,7 @@ class PortalClient:
                 'password': self.password,
                 'capt': ans
             }
-            r_post = self.session.post(signin_url, data=data, timeout=(1.5, 2.5), allow_redirects=True)
+            r_post = self.session.post(signin_url, data=data, timeout=(2.0, 4.0), allow_redirects=True)
             if r_post.status_code == 429:
                 self.rate_limited_until = time.time() + 2.5
                 if proxy_mgr.proxies:
@@ -131,7 +131,7 @@ class PortalClient:
                 return False
 
             rep_url = f"{self.base_url}/agent/FailedSMSReports"
-            r_rep = self.session.get(rep_url, timeout=(1.5, 2.5))
+            r_rep = self.session.get(rep_url, timeout=(2.0, 4.0))
             if r_rep.status_code == 429:
                 self.rate_limited_until = time.time() + 2.5
                 if proxy_mgr.proxies:
@@ -200,7 +200,7 @@ class PortalClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.5))
             duration = time.time() - t0
             self.last_response_time = duration
 
@@ -220,7 +220,7 @@ class PortalClient:
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)
-            if duration > 2.2:
+            if duration > 3.5:
                 self.consecutive_slow_queries += 1
                 if self.consecutive_slow_queries >= 2:
                     logger.warning(f"⚠️ Slow socket on [{self.worker_id}] ({duration:.2f}s). Resetting session to avoid stalls...")

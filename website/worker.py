@@ -151,15 +151,25 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
     Checks an account for new Telegram SMS and extracts OTPs.
     Defaults to keyword="Telegram" so that high-volume global traffic on Hetzner
     can NEVER bury or displace Telegram records.
-    Guarded with hard 3.0s asyncio timeout to prevent socket read hangs.
+    Guarded with hard 4.5s asyncio timeout to prevent socket read hangs.
     """
+    if not client.is_logged_in or not client.ajax_url:
+        try:
+            logger.info(f"Re-authenticating [{client.worker_id}] {client.username}...")
+            ok = await asyncio.wait_for(asyncio.to_thread(client.login), timeout=15.0)
+            if not ok:
+                return 0
+        except Exception as err:
+            logger.warning(f"Re-login failed for [{client.worker_id}] {client.username}: {err}")
+            return 0
+
     try:
         records = await asyncio.wait_for(
             asyncio.to_thread(client.fetch_records, keyword=keyword, display_length=display_length),
-            timeout=3.0
+            timeout=4.5
         )
     except asyncio.TimeoutError:
-        logger.warning(f"⚠️ Query timeout (>3.0s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
+        logger.warning(f"⚠️ Query timeout (>4.5s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
         client.reset_socket()
         return 0
     except Exception as e:
@@ -286,11 +296,16 @@ async def start_worker_loop():
     """Main worker loop using rotating multi-tab workers."""
     logger.info(f"⚡ Pre-authenticating {len(worker_pool)} rotating virtual tab workers...")
     for w in worker_pool:
-        try:
-            await asyncio.wait_for(asyncio.to_thread(w.login), timeout=4.0)
-        except Exception as le:
-            logger.warning(f"Login timeout/error for [{w.worker_id}] {w.username}: {le}")
-        await asyncio.sleep(0.3)
+        for attempt in range(3):
+            try:
+                ok = await asyncio.wait_for(asyncio.to_thread(w.login), timeout=15.0)
+                if ok:
+                    break
+                logger.warning(f"Login attempt {attempt+1} unsuccessful for [{w.worker_id}] {w.username}. Retrying...")
+            except Exception as le:
+                logger.warning(f"Login attempt {attempt+1} error for [{w.worker_id}] {w.username}: {le}")
+            await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0)
 
     # Initial historical seed across accounts:
     # 1. Permanently marks ALL pre-existing records as SEEN so they are NEVER sent to Telegram.
@@ -386,8 +401,8 @@ async def start_worker_loop():
                 current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
                 queries_on_current_worker = 0
 
-            # 0.35s with proxies, 0.45s direct (alternating between accounts gives 3.5s rest per account!)
-            interval = 0.35 if proxy_mgr.proxies else 0.45
+            # 0.35s with proxies, 0.5s direct (alternating between accounts gives ~4s rest per account!)
+            interval = 0.35 if proxy_mgr.proxies else 0.5
             await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())
