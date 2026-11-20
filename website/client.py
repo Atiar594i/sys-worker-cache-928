@@ -24,10 +24,11 @@ from website.proxy_manager import proxy_mgr
 logger = logging.getLogger("PortalClient")
 
 class PortalClient:
-    def __init__(self, username, password, base_url=BASE_URL):
+    def __init__(self, username, password, base_url=BASE_URL, worker_id="Tab-1", proxy=None):
         self.username = username
         self.password = password
         self.base_url = base_url.rstrip("/")
+        self.worker_id = worker_id
         self.is_logged_in = False
         self.ajax_url = None
         self.echo_counter = 0
@@ -36,7 +37,7 @@ class PortalClient:
         self.rate_limited_until = 0.0
         self.server_clock_skew = 49.5
         self.consecutive_slow_queries = 0
-        self.current_proxy = proxy_mgr.get_next_proxy()
+        self.current_proxy = proxy or proxy_mgr.get_next_proxy()
         self.session = None
         self._init_session()
 
@@ -44,13 +45,24 @@ class PortalClient:
         """Initializes or resets the HTTP session with current proxy and randomized User-Agent."""
         self.session = proxy_mgr.create_session(current_proxy=self.current_proxy)
 
+    def reset_session(self):
+        """Drops existing socket connections and creates a clean HTTP session."""
+        try:
+            if self.session:
+                self.session.close()
+        except Exception:
+            pass
+        self._init_session()
+        self.is_logged_in = False
+        self.ajax_url = None
+
     def switch_proxy_and_relogin(self, reason="Rate-limit detected"):
         """Rotates proxy when rate-limiting is suspected or reported."""
         old_proxy = self.current_proxy
         if old_proxy:
             proxy_mgr.report_rate_limit(old_proxy)
         self.current_proxy = proxy_mgr.get_next_proxy()
-        logger.info(f"🔄 Account {self.username}: {reason}. Switching from {old_proxy} to {self.current_proxy}")
+        logger.info(f"🔄 [{self.worker_id}] Account {self.username}: {reason}. Switching from {old_proxy} to {self.current_proxy}")
         self._init_session()
         self.is_logged_in = False
         return self.login()
@@ -71,7 +83,7 @@ class PortalClient:
         login_url = f"{self.base_url}/login"
         signin_url = f"{self.base_url}/signin"
         try:
-            r = self.session.get(login_url, timeout=(1.5, 3.5))
+            r = self.session.get(login_url, timeout=(1.5, 2.5))
             if "Date" in r.headers:
                 try:
                     s_dt = email.utils.parsedate_to_datetime(r.headers["Date"])
@@ -79,7 +91,7 @@ class PortalClient:
                 except Exception:
                     pass
             if r.status_code == 429:
-                self.rate_limited_until = time.time() + 1.5
+                self.rate_limited_until = time.time() + 2.5
                 if proxy_mgr.proxies:
                     self.switch_proxy_and_relogin("429 on login")
                 return False
@@ -96,12 +108,24 @@ class PortalClient:
                 'password': self.password,
                 'capt': ans
             }
-            r_post = self.session.post(signin_url, data=data, timeout=(1.5, 3.5), allow_redirects=True)
+            r_post = self.session.post(signin_url, data=data, timeout=(1.5, 2.5), allow_redirects=True)
+            if r_post.status_code == 429:
+                self.rate_limited_until = time.time() + 2.5
+                if proxy_mgr.proxies:
+                    self.switch_proxy_and_relogin("429 on signin")
+                return False
+
             if r_post.status_code != 200:
                 return False
 
             rep_url = f"{self.base_url}/agent/FailedSMSReports"
-            r_rep = self.session.get(rep_url, timeout=(1.5, 3.5))
+            r_rep = self.session.get(rep_url, timeout=(1.5, 2.5))
+            if r_rep.status_code == 429:
+                self.rate_limited_until = time.time() + 2.5
+                if proxy_mgr.proxies:
+                    self.switch_proxy_and_relogin("429 on FailedSMSReports")
+                return False
+
             if r_rep.status_code != 200:
                 return False
 
@@ -113,12 +137,13 @@ class PortalClient:
             self.is_logged_in = True
             self.rate_limited_until = 0.0
             self.consecutive_slow_queries = 0
-            proxy_display = self.current_proxy or "Direct (High-Speed)"
-            logger.info(f"✅ Fast Portal Client login successful: {self.username} (Proxy: {proxy_display})")
+            proxy_display = self.current_proxy or "Direct"
+            logger.info(f"✅ Fast Portal Client login successful: [{self.worker_id}] {self.username} (Proxy: {proxy_display})")
             return True
         except Exception as e:
-            logger.error(f"Login error for {self.username}: {e}")
+            logger.error(f"Login error on [{self.worker_id}] for {self.username}: {e}")
             self.is_logged_in = False
+            self.rate_limited_until = time.time() + 1.0
             return False
 
     def fetch_records(self, keyword="", display_length=50):
@@ -162,7 +187,7 @@ class PortalClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.5, 3.5))
+            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.0))
             duration = time.time() - t0
             self.last_response_time = duration
 
@@ -175,18 +200,21 @@ class PortalClient:
 
             # 1. Check for Rate Limit 429
             if res.status_code == 429:
-                logger.warning(f"⚠️ Status 429 (Rate Limit) for {self.username}. Cooldown 1.5s.")
-                self.rate_limited_until = time.time() + 1.5
+                logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown 2.5s.")
+                self.rate_limited_until = time.time() + 2.5
                 if proxy_mgr.proxies:
                     self.switch_proxy_and_relogin("429 received from portal")
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)
-            if duration > 2.5:
+            if duration > 1.8:
                 self.consecutive_slow_queries += 1
-                if self.consecutive_slow_queries >= 3 and proxy_mgr.proxies:
-                    logger.warning(f"⚠️ Slow queries detected ({duration:.2f}s) for {self.username}. Rotating proxy before rate limit hits...")
-                    self.switch_proxy_and_relogin("Proactive rate limit prevention (slow queries)")
+                if self.consecutive_slow_queries >= 2:
+                    logger.warning(f"⚠️ Slow socket on [{self.worker_id}] ({duration:.2f}s). Resetting session to avoid stalls...")
+                    if proxy_mgr.proxies:
+                        self.switch_proxy_and_relogin("Proactive slow socket recovery")
+                    else:
+                        self.reset_session()
             else:
                 self.consecutive_slow_queries = 0
 
@@ -214,6 +242,6 @@ class PortalClient:
                 })
             return records
         except Exception as e:
-            logger.warning(f"Fetch error for {self.username}: {e}")
-            self.rate_limited_until = time.time() + 0.3
+            logger.warning(f"Fetch error on [{self.worker_id}] for {self.username}: {e}")
+            self.rate_limited_until = time.time() + 0.5
             return None

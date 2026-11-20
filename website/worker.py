@@ -39,6 +39,7 @@ from website.config import (
     GROUP_ID
 )
 from website.client import PortalClient
+from website.proxy_manager import proxy_mgr
 
 logger = logging.getLogger("ScraperWorker")
 
@@ -51,10 +52,32 @@ sse_clients = set()
 # Guaranteed Telegram Dispatch Queue (Never drop, zero rate limits)
 telegram_queue = asyncio.Queue()
 
-# Initialize the two dedicated portal clients
-client1 = PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"])
-client2 = PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"])
-clients = [client1, client2]
+# Initialize the rotating virtual tab worker pool
+def build_worker_pool():
+    pool = []
+    proxies = proxy_mgr.proxies
+    if proxies:
+        # If external proxies are configured, assign one worker per proxy, alternating accounts
+        for idx, proxy in enumerate(proxies):
+            acc = ACCOUNTS[idx % len(ACCOUNTS)]
+            worker = PortalClient(
+                acc["username"],
+                acc["password"],
+                worker_id=f"Tab-{idx+1}",
+                proxy=proxy
+            )
+            pool.append(worker)
+        logger.info(f"⚡ Initialized proxy pool with {len(pool)} rotating workers.")
+    else:
+        # High-performance decoupled 4-tab pool on direct connection with isolated sessions & User-Agents
+        pool.append(PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"], worker_id="Tab-1"))
+        pool.append(PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"], worker_id="Tab-2"))
+        pool.append(PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"], worker_id="Tab-3"))
+        pool.append(PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"], worker_id="Tab-4"))
+        logger.info(f"⚡ Initialized 4 decoupled virtual tab workers (2x Atiar59_FD, 2x Smswork21_FD).")
+    return pool
+
+worker_pool = build_worker_pool()
 
 def broadcast_to_sse(item):
     """Broadcasts a new Telegram OTP to all connected browsers via SSE instantly (<0.1ms)."""
@@ -129,8 +152,21 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
     Checks an account for new Telegram SMS and extracts OTPs.
     Defaults to keyword="Telegram" so that high-volume global traffic on Hetzner
     can NEVER bury or displace Telegram records.
+    Guarded with hard 2.2s asyncio timeout to prevent socket read hangs.
     """
-    records = await asyncio.to_thread(client.fetch_records, keyword=keyword, display_length=display_length)
+    try:
+        records = await asyncio.wait_for(
+            asyncio.to_thread(client.fetch_records, keyword=keyword, display_length=display_length),
+            timeout=2.2
+        )
+    except asyncio.TimeoutError:
+        logger.warning(f"⚠️ Query timeout (>2.2s) on [{client.worker_id}] {client.username}. Resetting socket connection...")
+        client.reset_session()
+        return 0
+    except Exception as e:
+        logger.warning(f"Fetch error on [{client.worker_id}] {client.username}: {e}")
+        return 0
+
     if not records:
         return 0
 
@@ -205,6 +241,7 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
             "clean_number": clean_num,
             "otp": otp,
             "account": client.username,
+            "worker": client.worker_id,
             "country_name": country_name,
             "country_flag": flag,
             "country_code": code,
@@ -219,7 +256,7 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
         # ⚡ 1. INSTANT PUSH TO WEB DASHBOARD (< 0.1ms latency):
         recent_otps_buffer.appendleft(payload)
         broadcast_to_sse(payload)
-        logger.info(f"🚀 [0ms Web Push] New OTP for {clean_num}: {otp} (Account: {client.username})")
+        logger.info(f"🚀 [0ms Web Push] New OTP for {clean_num}: {otp} (Account: {client.username}, {client.worker_id})")
 
         # ⚡ 2. GUARANTEED ZERO-DROP TELEGRAM DISPATCH:
         if BOT_TOKEN and GROUP_ID:
@@ -247,20 +284,24 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
     return new_otps
 
 async def start_worker_loop():
-    """Main worker loop alternating round-robin between the two accounts."""
-    logger.info("⚡ Pre-authenticating Atiar59_FD and Smswork21_FD concurrently...")
-    await asyncio.gather(
-        asyncio.to_thread(client1.login),
-        asyncio.to_thread(client2.login)
-    )
+    """Main worker loop using rotating multi-tab workers."""
+    logger.info(f"⚡ Pre-authenticating {len(worker_pool)} rotating virtual tab workers...")
+    for w in worker_pool:
+        try:
+            await asyncio.wait_for(asyncio.to_thread(w.login), timeout=4.0)
+        except Exception as le:
+            logger.warning(f"Login timeout/error for [{w.worker_id}] {w.username}: {le}")
+        await asyncio.sleep(0.3)
 
-    # Initial historical seed across both accounts:
+    # Initial historical seed across accounts:
     # 1. Permanently marks ALL pre-existing records as SEEN so they are NEVER sent to Telegram.
     # 2. Populates recent_otps_buffer once so the web dashboard displays past records cleanly without duplicates.
     bd_tz = timezone(timedelta(hours=6))
     now_seed_ts = time.time()
 
-    for c in clients:
+    # Seed using the first two workers
+    seed_workers = worker_pool[:2] if len(worker_pool) >= 2 else worker_pool
+    for c in seed_workers:
         try:
             init_recs = await asyncio.to_thread(c.fetch_records, keyword="Telegram", display_length=50)
             if init_recs:
@@ -298,6 +339,7 @@ async def start_worker_loop():
                         "clean_number": clean_n,
                         "otp": otp,
                         "account": c.username,
+                        "worker": c.worker_id,
                         "country_name": country_name,
                         "country_flag": flag,
                         "country_code": code,
@@ -309,32 +351,53 @@ async def start_worker_loop():
                         "timestamp": now_seed_ts
                     })
         except Exception as e:
-            logger.warning(f"Error seeding historical records: {e}")
+            logger.warning(f"Error seeding historical records on [{c.worker_id}]: {e}")
 
     logger.info(f"✅ Seeding complete: {len(seen_hashes)} seen keys, {len(recent_otps_buffer)} initial items loaded.")
 
     # Start guaranteed Telegram dispatcher worker in background
     asyncio.create_task(telegram_dispatcher_worker())
 
-    # High-speed parallel interleaved polling tasks:
-    # ALWAYS query keyword="Telegram" with display_length=15.
-    # Directly filters MySQL database so Telegram OTPs are NEVER buried by global traffic,
-    # and every single OTP is caught within ~0.5s of arrival!
-    # Client 1 and Client 2 alternate with 0.5s phase offset.
-    async def account_poller(client_obj, offset_delay=0.0):
-        await asyncio.sleep(offset_delay)
-        logger.info(f"⚡ Dedicated high-speed polling task started for {client_obj.username}")
-        while True:
-            now_t = time.time()
-            if client_obj.rate_limited_until <= now_t:
-                try:
-                    await check_account_records(client_obj, keyword="Telegram", display_length=15)
-                except Exception as err:
-                    logger.error(f"Worker error for {client_obj.username}: {err}")
-            await asyncio.sleep(0.05)
+    # High-speed Rotating Multi-Tab Scheduler:
+    # Implements the user's tab-rotation architecture:
+    # 1. Stays on a tab/proxy for 3 refreshes.
+    # 2. Switches to the next tab/proxy before rate limits or Apache connection stalls hit.
+    # 3. Cycles through all tabs (e.g. 10 tabs / 10 proxies) round-robin.
+    # 4. By the time it returns to Tab 1, Tab 1 has rested, eliminating all rate limits!
+    QUERIES_PER_TAB = 3
 
-    asyncio.create_task(account_poller(client1, 0.0))
-    asyncio.create_task(account_poller(client2, 0.5))
+    async def rotating_scheduler():
+        logger.info(f"⚡ Rotating Multi-Tab Scheduler active with {len(worker_pool)} workers ({QUERIES_PER_TAB} queries per tab).")
+        current_worker_idx = 0
+        queries_on_current_worker = 0
+
+        while True:
+            worker = worker_pool[current_worker_idx % len(worker_pool)]
+            now_t = time.time()
+
+            if worker.rate_limited_until <= now_t:
+                try:
+                    await check_account_records(worker, keyword="Telegram", display_length=15)
+                    queries_on_current_worker += 1
+                except Exception as err:
+                    logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
+                    queries_on_current_worker = QUERIES_PER_TAB  # Force tab switch on error
+            else:
+                # Worker is in cooldown, switch tab immediately
+                queries_on_current_worker = QUERIES_PER_TAB
+
+            # Switch to next tab after completing QUERIES_PER_TAB refreshes
+            if queries_on_current_worker >= QUERIES_PER_TAB:
+                current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
+                queries_on_current_worker = 0
+                next_worker = worker_pool[current_worker_idx]
+                logger.debug(f"🔄 Completed {QUERIES_PER_TAB} queries. Switching tab -> [{next_worker.worker_id}] ({next_worker.username})")
+
+            # High-speed pacing: 0.35s with proxies, 0.65s direct
+            interval = 0.35 if proxy_mgr.proxies else 0.65
+            await asyncio.sleep(interval)
+
+    asyncio.create_task(rotating_scheduler())
 
     # Keep worker loop alive
     while True:
