@@ -5,6 +5,7 @@
 - Targeted search (keyword="Telegram") directly filters MySQL database,
   guaranteeing high-volume global SMS traffic (5 SMS/sec) NEVER buries Telegram OTPs.
 - Periodic wide-scan safety net (keyword="") every ~3.5s for any non-standard SMS.
+- Permanent deduplication: Once an SMS record is seen, it is NEVER re-sent.
 - Ultra-low latency:
   1. Web Dashboard via SSE stream (< 0.1ms)
   2. Telegram Group via queue worker (< 0.2s, 0 drop, no 429 rate limit)
@@ -44,7 +45,7 @@ logger = logging.getLogger("ScraperWorker")
 # In-memory shared state for the website
 recent_otps_buffer = collections.deque(maxlen=300)
 recent_logs_buffer = collections.deque(maxlen=500)
-seen_hashes = {}  # dedup_key -> timestamp (10-minute sliding window)
+seen_hashes = {}  # dedup_key -> timestamp (Permanent deduplication)
 sse_clients = set()
 
 # Guaranteed Telegram Dispatch Queue (Never drop, zero rate limits)
@@ -156,18 +157,18 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
         clean_num = re.sub(r'[^0-9]', '', raw_num)
         if len(clean_num) < 6:
             continue
-        dedup_key = f"{clean_num}_OTP_{otp}"
 
-        now_ts = time.time()
-        # 10-minute deduplication window (suppresses duplicate sends, allows re-tests)
-        if dedup_key in seen_hashes and (now_ts - seen_hashes[dedup_key]) < 600:
+        panel_time_raw = str(rec.get("time", "")).strip()
+        dedup_key = f"{clean_num}_OTP_{otp}_{panel_time_raw}"
+
+        # Permanent deduplication: NEVER re-process or re-send an already seen portal record!
+        if dedup_key in seen_hashes:
             continue
 
-        seen_hashes[dedup_key] = now_ts
+        seen_hashes[dedup_key] = time.time()
         new_otps += 1
 
         country_name, iso, flag, code = get_country_info(clean_num)
-        panel_time_raw = str(rec.get("time", "")).strip()
 
         dt_p = None
         if panel_time_raw:
@@ -227,9 +228,9 @@ async def check_account_records(client, keyword="Telegram", display_length=DISPL
             )
             telegram_queue.put_nowait({"text": tg_msg, "number": clean_num})
 
-    # Keep seen_hashes memory bounded
-    if len(seen_hashes) > 1000:
-        cutoff = time.time() - 900
+    # Memory bounding: Keep seen_hashes bounded (only evict entries older than 48 hours if size > 50,000)
+    if len(seen_hashes) > 50000:
+        cutoff = time.time() - (48 * 3600)
         for k in list(seen_hashes.keys()):
             if seen_hashes[k] < cutoff:
                 del seen_hashes[k]
@@ -245,16 +246,14 @@ async def start_worker_loop():
     )
 
     # Initial historical seed across both accounts:
-    # Any record older than 25 minutes is marked as already seen so we don't spam ancient codes.
-    # Recent records from the last 20 minutes (e.g. 20565, 49105, 63917) remain unseen and will be
-    # immediately dispatched upon startup!
+    # 1. Permanently marks ALL pre-existing records as SEEN so they are NEVER sent to Telegram.
+    # 2. Populates recent_otps_buffer once so the web dashboard displays past records cleanly without duplicates.
     bd_tz = timezone(timedelta(hours=6))
     now_seed_ts = time.time()
-    cutoff_startup_dt = datetime.now(timezone.utc) - timedelta(minutes=25)
 
     for c in clients:
         try:
-            init_recs = await asyncio.to_thread(c.fetch_records, keyword="Telegram", display_length=30)
+            init_recs = await asyncio.to_thread(c.fetch_records, keyword="Telegram", display_length=50)
             if init_recs:
                 init_recs.sort(key=lambda r: str(r.get("time", "")))
                 for r in init_recs:
@@ -266,20 +265,22 @@ async def start_worker_loop():
                     if not otp: continue
                     clean_n = re.sub(r'[^0-9]', '', str(r.get("number", "")))
                     if len(clean_n) < 6: continue
-                    k = f"{clean_n}_OTP_{otp}"
 
-                    p_time = str(r.get("time", ""))
-                    dt_rec = None
+                    p_time = str(r.get("time", "")).strip()
+                    k = f"{clean_n}_OTP_{otp}_{p_time}"
+
+                    # Mark permanently as SEEN so this pre-existing record is NEVER sent to Telegram
+                    seen_hashes[k] = now_seed_ts
+
+                    country_name, iso, flag, code = get_country_info(clean_n)
                     try:
-                        dt_rec = datetime.strptime(p_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        dt = datetime.strptime(p_time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                        p_disp = dt.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
                     except Exception:
-                        pass
+                        p_disp = p_time
 
-                    # If older than 25m, mark as seen and populate buffer for dashboard history
-                    if dt_rec and dt_rec < cutoff_startup_dt:
-                        seen_hashes[k] = now_seed_ts
-                        country_name, iso, flag, code = get_country_info(clean_n)
-                        p_disp = dt_rec.astimezone(bd_tz).strftime("%Y-%m-%d %I:%M:%S %p")
+                    # Only append to recent_otps_buffer if not already present
+                    if not any(item.get("id") == k for item in recent_otps_buffer):
                         recent_otps_buffer.appendleft({
                             "id": k,
                             "number": f"+{clean_n}",
@@ -293,7 +294,7 @@ async def start_worker_loop():
                             "message": msg,
                             "panel_time": p_disp,
                             "received_time": p_disp,
-                            "speed": "⚡ Live",
+                            "speed": "⚡ Recorded",
                             "timestamp": now_seed_ts
                         })
         except Exception as e:
