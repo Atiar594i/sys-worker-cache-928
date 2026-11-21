@@ -198,7 +198,7 @@ class PortalClient:
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Referer': f"{self.base_url}/agent/FailedSMSReports",
             'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Connection': 'close',
+            'Connection': 'keep-alive',
         }
         self.echo_counter += 1
         self.query_count += 1
@@ -240,9 +240,10 @@ class PortalClient:
                     self.switch_proxy_and_relogin("429 received from portal")
                     self.rate_limited_until = 0.0
                 else:
-                    cooldown = 10.0
+                    sec_in_min = datetime.now(timezone.utc).second
+                    cooldown = max(2.0, (60 - sec_in_min) + 0.5)
                     self.rate_limited_until = time.time() + cooldown
-                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown {cooldown}s for full token bucket refill.")
+                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Sleeping {cooldown:.1f}s until minute rollover for token refill.")
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)

@@ -70,14 +70,22 @@ def build_worker_pool():
             pool.append(worker)
         logger.info(f"⚡ Initialized proxy pool with {len(pool)} rotating workers.")
     else:
-        # Dedicated high-speed dual-account pool on direct connection (1 for Atiar59_FD, 1 for Smswork21_FD)
+        # Dedicated high-speed single primary portal worker (Atiar59_FD) for direct connection
+        # Running a single primary worker maximizes token bucket efficiency and prevents 429 collisions
         pool.append(PortalClient(ACCOUNTS[0]["username"], ACCOUNTS[0]["password"], worker_id="Tab-1"))
-        pool.append(PortalClient(ACCOUNTS[1]["username"], ACCOUNTS[1]["password"], worker_id="Tab-2"))
-        logger.info(f"⚡ Initialized dual dedicated portal workers (Atiar59_FD & Smswork21_FD).")
+        logger.info(f"⚡ Initialized primary dedicated portal worker (Atiar59_FD) in direct connection mode.")
     return pool
 
 worker_pool = build_worker_pool()
 clients = worker_pool  # Backward compatibility alias for web health API
+
+def reload_worker_pool():
+    """Reloads proxies and updates worker pool dynamically."""
+    global worker_pool, clients
+    proxy_mgr.load_proxies()
+    worker_pool = build_worker_pool()
+    clients = worker_pool
+    logger.info(f"⚡ Worker pool reloaded with {len(worker_pool)} workers.")
 
 def broadcast_to_sse(item):
     """Broadcasts a new Telegram OTP to all connected browsers via SSE instantly (<0.1ms)."""
@@ -386,43 +394,41 @@ async def start_worker_loop():
         queries_on_current_worker = 0
 
         while True:
-            now_t = time.time()
-            worker = worker_pool[current_worker_idx % len(worker_pool)]
+            try:
+                now_t = time.time()
+                worker = worker_pool[current_worker_idx % len(worker_pool)]
 
-            # Interval: 0.25s for multi-proxy pool, 2.3s for single direct IP
-            interval = 0.25 if proxy_mgr.proxies else 2.3
+                # Dynamic Interval:
+                # - Multi-proxy pool: 0.25s cadence (each proxy IP queries every 2.5s-5s, zero 429)
+                # - Single direct IP: 3.2s cadence (steady rate perfectly matching Hetzner token bucket refill without 429)
+                interval = 0.25 if proxy_mgr.proxies else 3.2
 
-            if worker.rate_limited_until <= now_t:
-                try:
-                    await check_account_records(worker, keyword="Telegram", display_length=35)
-                    queries_on_current_worker += 1
-                except Exception as err:
-                    logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
-                    queries_on_current_worker = QUERIES_PER_TAB
+                if worker.rate_limited_until <= now_t:
+                    try:
+                        await check_account_records(worker, keyword="Telegram", display_length=35)
+                        queries_on_current_worker += 1
+                    except Exception as err:
+                        logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
+                        queries_on_current_worker = QUERIES_PER_TAB
 
-                if queries_on_current_worker >= QUERIES_PER_TAB:
-                    current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
-                    queries_on_current_worker = 0
+                    if queries_on_current_worker >= QUERIES_PER_TAB:
+                        current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
+                        queries_on_current_worker = 0
 
-                await asyncio.sleep(interval)
-            else:
-                # If current worker is cooling down
-                if not proxy_mgr.proxies:
-                    # Single IP: Rate limit is per IP, so ensure all direct workers respect the cooldown
-                    for w in worker_pool:
-                        if w.rate_limited_until < worker.rate_limited_until:
-                            w.rate_limited_until = worker.rate_limited_until
-
-                all_limited = all(w.rate_limited_until > now_t for w in worker_pool)
-                if all_limited:
-                    earliest_ready = min(w.rate_limited_until for w in worker_pool)
-                    sleep_dur = max(0.5, earliest_ready - now_t)
-                    await asyncio.sleep(min(sleep_dur, 10.0))
-                else:
                     await asyncio.sleep(interval)
-
-                current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
-                queries_on_current_worker = 0
+                else:
+                    # If current worker is cooling down
+                    if not proxy_mgr.proxies:
+                        sleep_dur = max(0.5, worker.rate_limited_until - now_t)
+                        logger.info(f"Direct mode rate-limit cooldown active. Waiting {sleep_dur:.1f}s until refill...")
+                        await asyncio.sleep(min(sleep_dur, 60.0))
+                    else:
+                        current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
+                        queries_on_current_worker = 0
+                        await asyncio.sleep(interval)
+            except Exception as loop_err:
+                logger.error(f"Unexpected error in rotating_scheduler: {loop_err}")
+                await asyncio.sleep(2.0)
 
     asyncio.create_task(rotating_scheduler())
 

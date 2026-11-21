@@ -994,6 +994,107 @@ async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ দয়া করে সঠিক সংখ্যা প্রদান করুন (যেমন: <code>/interval 1.5</code>)!", parse_mode="HTML")
 
+async def proxies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    from website.proxy_manager import proxy_mgr
+    proxy_mgr.load_proxies()
+    proxies = proxy_mgr.proxies
+    if not proxies:
+        await update.message.reply_text(
+            "🌐 <b>প্রক্সি স্ট্যাটাস:</b> <code>সরাসরি সংযোগ (Direct IP)</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "বর্তমানে কোনো প্রক্সি লোড করা নেই। বট সিঙ্গেল আইপি অপ্টিমাইজড মোডে চলছে।\n\n"
+            "⚡ <b>০-১ সেকেন্ড ইনস্ট্যান্ট স্পিড ও ১০টি ট্যাব রোটেশন পেতে:</b>\n"
+            "<code>/addproxy &lt;ip:port&gt;</code> বা একাধিক প্রক্সি দিতে:\n"
+            "<code>/setproxies &lt;proxy1&gt; &lt;proxy2&gt; ...</code> লিখে পাঠান।",
+            parse_mode="HTML"
+        )
+    else:
+        proxy_lines = "\n".join([f"• <code>{p}</code>" for p in proxies[:15]])
+        await update.message.reply_text(
+            f"🌐 <b>সক্রিয় প্রক্সি পুল:</b> <code>{len(proxies)} টি সার্ভার</code>\n"
+            f"⚡ <b>স্পিড মোড:</b> <code>০.২৫ সেকেন্ড (১০টি ট্যাব রোটেশন)</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{proxy_lines}\n\n"
+            f"<i>প্রক্সি মুছতে:</i> <code>/clearproxies</code>",
+            parse_mode="HTML"
+        )
+
+async def set_proxies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    text = update.message.text
+    raw_args = list(context.args) if context.args else []
+    if not raw_args:
+        lines = text.splitlines()[1:]
+        raw_args = [l.strip() for l in lines if l.strip()]
+
+    if not raw_args:
+        await update.message.reply_text(
+            "⚠️ দয়া করে এক বা একাধিক প্রক্সি দিন!\n"
+            "উদাহরণ:\n<code>/setproxies 1.2.3.4:8080 5.6.7.8:8080</code>\n"
+            "বা <code>/addproxy 1.2.3.4:8080</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    from website.proxy_manager import proxy_mgr
+    proxy_file = os.path.join(os.path.dirname(__file__), "website", "proxies.txt")
+    
+    existing = []
+    if os.path.exists(proxy_file):
+        with open(proxy_file, "r", encoding="utf-8") as f:
+            for l in f:
+                l = l.strip()
+                if l and not l.startswith("#"):
+                    existing.append(l)
+
+    added = 0
+    for p in raw_args:
+        p = p.strip()
+        if p and p not in existing:
+            existing.append(p)
+            added += 1
+
+    with open(proxy_file, "w", encoding="utf-8") as f:
+        f.write("# Proxies for multi-tab rotation\n")
+        for p in existing:
+            f.write(f"{p}\n")
+
+    proxy_mgr.load_proxies()
+    try:
+        from website.worker import reload_worker_pool
+        reload_worker_pool()
+    except Exception:
+        pass
+
+    await update.message.reply_text(
+        f"✅ <b>{added} টি নতুন প্রক্সি সফলভাবে যুক্ত হয়েছে!</b>\n"
+        f"🌐 মোট প্রক্সি: <b>{len(existing)} টি</b>\n"
+        f"⚡ <b>ভার্চুয়াল ট্যাব ও ০.২৫ সে. হাই-স্পিড রোটেশন সক্রিয়!</b>",
+        parse_mode="HTML"
+    )
+
+async def clear_proxies_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_auth(update):
+        return
+    proxy_file = os.path.join(os.path.dirname(__file__), "website", "proxies.txt")
+    if os.path.exists(proxy_file):
+        with open(proxy_file, "w", encoding="utf-8") as f:
+            f.write("# Proxies cleared\n")
+    from website.proxy_manager import proxy_mgr
+    proxy_mgr.load_proxies()
+    try:
+        from website.worker import reload_worker_pool
+        reload_worker_pool()
+    except Exception:
+        pass
+    await update.message.reply_text(
+        "🗑 <b>সব প্রক্সি মুছে ফেলা হয়েছে।</b>\nবট এখন সরাসরি সিঙ্গেল আইপি মোডে চলবে।",
+        parse_mode="HTML"
+    )
+
 async def start_monitor_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
@@ -1881,6 +1982,9 @@ def main():
     app.add_handler(CommandHandler("keywords", keywords_command))
     app.add_handler(CommandHandler("clear", clear_command))
     app.add_handler(CommandHandler("interval", interval_command))
+    app.add_handler(CommandHandler(["proxies", "proxy"], proxies_command))
+    app.add_handler(CommandHandler(["setproxies", "addproxy", "addproxies"], set_proxies_command))
+    app.add_handler(CommandHandler("clearproxies", clear_proxies_command))
     app.add_handler(CommandHandler("start_monitor", start_monitor_command))
     app.add_handler(CommandHandler("stop_monitor", stop_monitor_command))
     app.add_handler(CommandHandler("check_now", check_now_command))
