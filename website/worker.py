@@ -61,10 +61,12 @@ def build_worker_pool():
         # If external proxies are configured, assign one worker per proxy, alternating accounts
         for idx, proxy in enumerate(proxies):
             acc = ACCOUNTS[idx % len(ACCOUNTS)]
+            c_match = re.search(r'_area-([A-Za-z0-9]+)', proxy)
+            country_tag = f"-{c_match.group(1).upper()}" if c_match else ""
             worker = PortalClient(
                 acc["username"],
                 acc["password"],
-                worker_id=f"Tab-{idx+1}",
+                worker_id=f"Tab-{idx+1}{country_tag}",
                 proxy=proxy
             )
             pool.append(worker)

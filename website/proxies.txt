@@ -1,5 +1,11 @@
-# Add rotating proxies here (one per line). Supported formats:
-# http://username:password@ip:port
-# http://ip:port
-# socks5://ip:port
-# If empty, the system automatically uses ultra-fast direct connection with dynamic User-Agent rotation.
+# Dedicated 10-Country High-Speed Rotating Proxies (BestProxy)
+http://bp-Atiar59w_area-US:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-GB:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-DE:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-CA:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-NL:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-FR:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-ES:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-IT:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-PL:A59427509@proxy.bestproxy.com:2312
+http://bp-Atiar59w_area-SE:A59427509@proxy.bestproxy.com:2312
