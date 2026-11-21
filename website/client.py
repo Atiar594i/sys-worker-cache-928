@@ -240,9 +240,9 @@ class PortalClient:
                     self.switch_proxy_and_relogin("429 received from portal")
                     self.rate_limited_until = 0.0
                 else:
-                    cooldown = 6.0
+                    cooldown = 10.0
                     self.rate_limited_until = time.time() + cooldown
-                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown {cooldown}s to allow token bucket refill.")
+                    logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown {cooldown}s for full token bucket refill.")
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)

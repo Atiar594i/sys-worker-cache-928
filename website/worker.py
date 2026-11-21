@@ -389,6 +389,9 @@ async def start_worker_loop():
             now_t = time.time()
             worker = worker_pool[current_worker_idx % len(worker_pool)]
 
+            # Interval: 0.25s for multi-proxy pool, 2.3s for single direct IP
+            interval = 0.25 if proxy_mgr.proxies else 2.3
+
             if worker.rate_limited_until <= now_t:
                 try:
                     await check_account_records(worker, keyword="Telegram", display_length=35)
@@ -396,27 +399,30 @@ async def start_worker_loop():
                 except Exception as err:
                     logger.error(f"Scheduler error for [{worker.worker_id}] {worker.username}: {err}")
                     queries_on_current_worker = QUERIES_PER_TAB
+
+                if queries_on_current_worker >= QUERIES_PER_TAB:
+                    current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
+                    queries_on_current_worker = 0
+
+                await asyncio.sleep(interval)
             else:
-                # If current worker is cooling down, check if all workers are cooling down
+                # If current worker is cooling down
+                if not proxy_mgr.proxies:
+                    # Single IP: Rate limit is per IP, so ensure all direct workers respect the cooldown
+                    for w in worker_pool:
+                        if w.rate_limited_until < worker.rate_limited_until:
+                            w.rate_limited_until = worker.rate_limited_until
+
                 all_limited = all(w.rate_limited_until > now_t for w in worker_pool)
                 if all_limited:
                     earliest_ready = min(w.rate_limited_until for w in worker_pool)
                     sleep_dur = max(0.5, earliest_ready - now_t)
-                    await asyncio.sleep(min(sleep_dur, 8.0))
-                # Rotate to next worker immediately without blocking
+                    await asyncio.sleep(min(sleep_dur, 10.0))
+                else:
+                    await asyncio.sleep(interval)
+
                 current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
                 queries_on_current_worker = 0
-                continue
-
-            if queries_on_current_worker >= QUERIES_PER_TAB:
-                current_worker_idx = (current_worker_idx + 1) % len(worker_pool)
-                queries_on_current_worker = 0
-
-            # Dynamic polling cadence:
-            # - With multi-tab proxies: 0.25s cadence (each proxy IP queries every ~3-5s, zero 429)
-            # - Direct single IP: 1.8s cadence (total cycle ~3.3s perfectly matches server token refill rate)
-            interval = 0.25 if proxy_mgr.proxies else 1.8
-            await asyncio.sleep(interval)
 
     asyncio.create_task(rotating_scheduler())
 
