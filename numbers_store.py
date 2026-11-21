@@ -38,36 +38,45 @@ def _clean_number(num_str):
     return re.sub(r'[^0-9]', '', str(num_str)).strip()
 
 def reload_from_disk(force=False):
-    """Reloads consumed and collected numbers from disk if modified."""
+    """Reloads consumed and collected numbers from disk (checking both STORE_FILE and CONFIG_FILE)."""
     global _last_mtime, _consumed_set, _collected_set
     with _lock:
-        target_file = STORE_FILE if os.path.exists(STORE_FILE) else CONFIG_FILE
-        if not os.path.exists(target_file):
+        files_to_check = [f for f in (STORE_FILE, CONFIG_FILE) if os.path.exists(f)]
+        if not files_to_check:
             return
 
         try:
-            mtime = os.path.getmtime(target_file)
-            if not force and mtime <= _last_mtime and _consumed_set:
+            max_mtime = max(os.path.getmtime(f) for f in files_to_check)
+            if not force and max_mtime <= _last_mtime and _consumed_set:
                 return
 
-            with open(target_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            new_consumed = set()
+            new_collected = set()
 
-            raw_consumed = data.get("consumed_numbers", [])
-            raw_collected = data.get("collected_numbers", [])
+            for target_file in files_to_check:
+                try:
+                    with open(target_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    for n in data.get("consumed_numbers", []):
+                        cn = _clean_number(n)
+                        if cn:
+                            new_consumed.add(cn)
+                    for n in data.get("collected_numbers", []):
+                        cn = _clean_number(n)
+                        if cn:
+                            new_collected.add(cn)
+                except Exception as ef:
+                    logger.debug(f"Error reading {target_file}: {ef}")
 
-            new_consumed = set(_clean_number(n) for n in raw_consumed if _clean_number(n))
-            new_collected = set(_clean_number(n) for n in raw_collected if _clean_number(n))
-
-            # Strictly invariant: collected numbers CANNOT contain any consumed number
+            # Invariant: collected numbers CANNOT contain any consumed number
             new_collected = new_collected - new_consumed
 
             _consumed_set = new_consumed
             _collected_set = new_collected
-            _last_mtime = mtime
+            _last_mtime = max_mtime
             logger.debug(f"NumbersStore reloaded: {len(_collected_set)} collected, {len(_consumed_set)} consumed.")
         except Exception as e:
-            logger.warning(f"Error reading numbers store from {target_file}: {e}")
+            logger.warning(f"Error reading numbers store: {e}")
 
 def _save_to_disk():
     """Atomically saves the in-memory sets to consumed_store.json and config.json."""

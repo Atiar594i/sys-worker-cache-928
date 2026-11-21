@@ -1619,6 +1619,10 @@ async def process_sms_check(app=None, target_client=None):
                         collected_set = set(re.sub(r'[^0-9]', '', str(n)) for n in config.get("collected_numbers", []))
                         if clean_num not in consumed_set and clean_num not in collected_set:
                             config["collected_numbers"].append(clean_num)
+                            try:
+                                numbers_store.collect_number(clean_num, otp=otp)
+                            except Exception:
+                                pass
 
                     fetch_elapsed = time.time() - t_fetch_start
                     delay = min(1.2, max(0.4, round(fetch_elapsed, 1)))
@@ -1707,6 +1711,10 @@ async def background_monitoring_loop(app):
                         config["collected_numbers"].append(clean_num)
                         collected_set.add(clean_num)
                         new_collected_count += 1
+                        try:
+                            numbers_store.collect_number(clean_num, otp=otp)
+                        except Exception:
+                            pass
 
                     # Populate recent OTP buffer for initial web dashboard view:
                     try:

@@ -40,6 +40,8 @@ class PortalClient:
         self.consecutive_slow_queries = 0
         self.current_proxy = proxy or proxy_mgr.get_next_proxy()
         self.session = None
+        self.login_time = 0.0
+        self.logged_in_date = ""
         self._init_session()
 
     def _init_session(self):
@@ -151,6 +153,8 @@ class PortalClient:
 
             self.ajax_url = f"{self.base_url}/agent/{m.group(1)}"
             self.is_logged_in = True
+            self.login_time = time.time()
+            self.logged_in_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             self.rate_limited_until = 0.0
             self.consecutive_slow_queries = 0
             proxy_display = self.current_proxy or "Direct"
@@ -171,9 +175,23 @@ class PortalClient:
         if self.rate_limited_until > now:
             return None
 
+        today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Proactive session refresh: re-login if older than 2 hours or UTC date rolled over
+        if (now - self.login_time > 7200) or (self.logged_in_date and self.logged_in_date != today_utc):
+            logger.info(f"🔄 [{self.worker_id}] Session refresh (age > 2h or UTC day rolled to {today_utc}). Re-logging in...")
+            self.is_logged_in = False
+            if not self.login():
+                return None
+
         if not self.is_logged_in or not self.ajax_url:
             if not self.login():
                 return None
+
+        # Dynamically inject current UTC date into fdate1 & fdate2 to guarantee 0-lag queries
+        query_url = self.ajax_url
+        query_url = re.sub(r'fdate1=[^&]+', f'fdate1={today_utc}%2000:00:00', query_url)
+        query_url = re.sub(r'fdate2=[^&]+', f'fdate2={today_utc}%2023:59:59', query_url)
 
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
@@ -204,7 +222,7 @@ class PortalClient:
 
         try:
             t0 = time.time()
-            res = self.session.get(self.ajax_url, params=params, headers=headers, timeout=(1.2, 2.0))
+            res = self.session.get(query_url, params=params, headers=headers, timeout=(2.5, 5.0))
             duration = time.time() - t0
             self.last_response_time = duration
 
@@ -222,13 +240,13 @@ class PortalClient:
                     self.switch_proxy_and_relogin("429 received from portal")
                     self.rate_limited_until = 0.0
                 else:
-                    cooldown = 8.0
+                    cooldown = 6.0
                     self.rate_limited_until = time.time() + cooldown
                     logger.warning(f"⚠️ Status 429 (Rate Limit) on [{self.worker_id}] for {self.username}. Cooldown {cooldown}s to allow token bucket refill.")
                 return None
 
             # 2. Check for portal slowdown (early rate limit indicator)
-            if duration > 2.2:
+            if duration > 3.8:
                 self.consecutive_slow_queries += 1
                 if self.consecutive_slow_queries >= 2:
                     logger.warning(f"⚠️ Slow socket on [{self.worker_id}] ({duration:.2f}s). Resetting session to avoid stalls...")
