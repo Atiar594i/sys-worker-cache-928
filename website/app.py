@@ -54,6 +54,33 @@ DASHBOARD_FILE = os.path.join(CURRENT_DIR, "dashboard.html")
 if not os.path.exists(DASHBOARD_FILE):
     DASHBOARD_FILE = os.path.join(CURRENT_DIR, "templates", "dashboard.html")
 
+DISABLE_WEBSITE = os.environ.get("DISABLE_WEBSITE", "true").lower() in ("true", "1", "yes")
+
+async def handle_website_disabled(request):
+    """Fallback handler when website is turned off."""
+    if request.path == "/health":
+        return web.json_response({
+            "status": "online",
+            "website": "disabled",
+            "bot": "active",
+            "total_seen": len(seen_hashes),
+            "total_collected": numbers_store.get_collected_count()
+        })
+    disabled_html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Website Offline</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f172a; color: #f8fafc;">
+  <div style="text-align: center; max-width: 500px; padding: 30px; background: #1e293b; border-radius: 12px; border: 1px solid #334155;">
+    <h1 style="font-size: 2.2rem; margin-bottom: 10px;">⚠️ Website Offline</h1>
+    <p style="font-size: 1.1rem; color: #94a3b8; line-height: 1.6;">The web dashboard has been turned off.<br>SMS monitoring and instant Telegram OTP dispatch remain fully active in the background.</p>
+  </div>
+</body>
+</html>"""
+    return web.Response(text=disabled_html, content_type="text/html", status=503)
+
 # --- Endpoints ---
 
 async def handle_dashboard(request):
@@ -135,6 +162,12 @@ async def handle_logs(request):
 
 async def init_web_app():
     app = web.Application()
+    if DISABLE_WEBSITE:
+        logger.info("🔒 Website dashboard & APIs are DISABLED (Scraper running in background)")
+        app.router.add_route("*", "/", handle_website_disabled)
+        app.router.add_route("*", "/{tail:.*}", handle_website_disabled)
+        return app
+
     app.router.add_get("/", handle_dashboard)
     app.router.add_get("/dashboard", handle_dashboard)
     app.router.add_get("/live", handle_dashboard)
