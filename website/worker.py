@@ -111,6 +111,7 @@ async def telegram_dispatcher_worker():
     - Smooth sub-second dispatch: Sends single messages instantly.
     - Intelligent rate pacing: 0.35s spacing between consecutive messages to strictly prevent Telegram group rate limits.
     """
+    global GROUP_ID
     logger.info("⚡ Guaranteed Telegram Dispatcher Worker started.")
     async with aiohttp.ClientSession() as session:
         while True:
@@ -144,6 +145,16 @@ async def telegram_dispatcher_worker():
                                 await asyncio.sleep(retry_after)
                             else:
                                 err_txt = await resp.text()
+                                try:
+                                    err_json = json.loads(err_txt)
+                                    mig_id = err_json.get("parameters", {}).get("migrate_to_chat_id")
+                                    if mig_id:
+                                        logger.info(f"🔄 Group was upgraded to supergroup! Auto-migrating GROUP_ID from {GROUP_ID} to {mig_id}")
+                                        GROUP_ID = str(mig_id)
+                                        payload["chat_id"] = GROUP_ID
+                                        continue
+                                except Exception:
+                                    pass
                                 logger.warning(f"Telegram dispatch HTTP {resp.status} for {number}: {err_txt[:100]}")
                                 await asyncio.sleep(0.3)
                     except Exception as e:

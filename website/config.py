@@ -40,7 +40,7 @@ def get_bot_credentials():
                     group_id = group_id or cfg.get("group_id")
             except Exception:
                 pass
-    return bot_token or "8784442674:AAE-nwM7m7svAL9nxipswL8f6CwvssKfIyc", group_id or "-5586886432"
+    return bot_token or "8784442674:AAE-nwM7m7svAL9nxipswL8f6CwvssKfIyc", group_id or "-1004322822812"
 
 BOT_TOKEN, GROUP_ID = get_bot_credentials()
 

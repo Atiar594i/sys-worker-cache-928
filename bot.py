@@ -85,7 +85,7 @@ COUNTRY_CACHE = {}
 def load_config():
     default_config = {
         "bot_token": "8784442674:AAE-nwM7m7svAL9nxipswL8f6CwvssKfIyc",
-        "group_id": "-5586886432",
+        "group_id": "-1004322822812",
         "username": "Atiar59_FD",
         "password": "Atiar5942@#",
         "base_url": "http://168.119.13.175/ints",
